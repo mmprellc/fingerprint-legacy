@@ -29,10 +29,18 @@ export function wordsOf(lines: string[]) {
   return words.length ? words : ["Always"];
 }
 
+/** Sits between names, and between a name and a verse. It never appears inside a verse. */
+export const RIDGE_DIVIDER = "·";
+
+function verseWords(verse: string) {
+  return verse.split(/\s+/).filter(Boolean);
+}
+
 /**
- * One name leads a ridge when it fits, then scripture fills the rest.
- * Names stay whole and cycle in order, so a later name is not buried behind a verse.
- * Verses repeat, in order, wherever a ridge still has room.
+ * Names stay whole. Each scripture is one phrase, from the opening quote through
+ * the reference, and may continue on the next ridge segments in this same order.
+ * A name never lands in the middle of a verse, and a verse never starts mid-phrase.
+ * Names sit between whole verses, or on their own ridges, with a divider between them.
  */
 export function packBodyRuns(
   runs: Pt[][],
@@ -42,59 +50,201 @@ export function packBodyRuns(
   space: number | ((runIndex: number) => number),
   nameCursor: { i: number },
   verseCursor: { i: number },
-  ceiling: number,
+  _ceiling: number,
 ): PackedRun[] {
   const packed: PackedRun[] = [];
   const gapFor = (runIndex: number) => (typeof space === "number" ? space : space(runIndex));
-  const cannotFit = (word: string) => {
-    let best = 0;
-    runs.forEach((points, index) => {
-      best = Math.max(best, pathLength(points) - measure(word, index));
-    });
-    return best < 3 && best < ceiling;
+  const versesAt = verses.map(verseWords).filter((words) => words.length);
+  let verseAt = verseCursor.i;
+  let verseWord = 0;
+  let namesSinceVerse = 0;
+  let namesPlaced = 0;
+  let owed = versesAt.length ? versesAt.length - (verseAt % versesAt.length) : 0;
+
+  const cannotFitFrom = (token: string, from: number) => {
+    for (let index = from; index < runs.length; index++) {
+      if (pathLength(runs[index]) - measure(token, index) >= 3) return false;
+    }
+    return true;
   };
+
+  const verseFits = (start: number, words: string[], used0: number, count0: number) => {
+    let wi = 0;
+    for (let runIndex = start; runIndex < runs.length && wi < words.length; runIndex++) {
+      const length = pathLength(runs[runIndex]);
+      const gap = gapFor(runIndex);
+      let used = runIndex === start ? used0 : 2;
+      let count = runIndex === start ? count0 : 0;
+      if (runIndex === start && count > 0) {
+        const need = gap + measure(RIDGE_DIVIDER, runIndex);
+        if (need > length - used - 1.5) return false;
+        used += need;
+        count += 1;
+      }
+      let placed = 0;
+      while (wi < words.length) {
+        const need = (count ? gap : 0) + measure(words[wi], runIndex);
+        if (need > length - used - 1.5) break;
+        used += need;
+        count += 1;
+        wi += 1;
+        placed += 1;
+      }
+      // A later segment that cannot hold the next word is left blank. The phrase continues.
+      if (!placed && runIndex === start) return false;
+    }
+    return wi === words.length;
+  };
+
+  // One full cycle has to land. Extra cycles fill the remaining ridges, with names between verses.
+  const sampleGap = gapFor(0);
+  const widthOf = (words: string[]) => words.reduce((sum, word, index) => sum + (index ? sampleGap : 0) + measure(word, 0), 0);
+  const totalLen = runs.reduce((sum, run) => sum + pathLength(run), 0);
+  const cycleLen = versesAt.reduce((sum, words) => sum + widthOf(words) + sampleGap + measure(RIDGE_DIVIDER, 0), 0);
+  const nameUnit = names.length
+    ? names.reduce((sum, name) => sum + measure(name, 0) + sampleGap + measure(RIDGE_DIVIDER, 0), 0) / names.length
+    : 1;
+  const allNamesLen = names.reduce((sum, name) => sum + measure(name, 0) + sampleGap, 0);
+  const safeCycle = Math.max(cycleLen, 1);
+  const cyclesThatFit = versesAt.length ? Math.max(1, Math.floor(totalLen / safeCycle)) : 1;
+  const cyclesThatLeaveNames = versesAt.length ? Math.max(1, Math.floor(Math.max(0, totalLen - allNamesLen) / safeCycle) || 1) : 1;
+  const targetCycles = Math.max(1, Math.min(cyclesThatFit, cyclesThatLeaveNames));
+  const gapCount = Math.max(1, targetCycles * Math.max(versesAt.length, 1));
+  const nameBudget = Math.max(0, totalLen - targetCycles * cycleLen);
+  const namesPerGap = names.length ? Math.max(1, Math.round(nameBudget / gapCount / Math.max(nameUnit, 1))) : 0;
+
+  // True when `count` whole verses still fit on runs from `from` onward, with no names between them.
+  const laterHolds = (from: number, count: number) => {
+    if (count <= 0) return true;
+    let runIndex = from;
+    for (let n = 0; n < count; n++) {
+      const words = versesAt[(verseAt + n) % versesAt.length];
+      let wi = 0;
+      while (wi < words.length) {
+        if (runIndex >= runs.length) return false;
+        const length = pathLength(runs[runIndex]);
+        const gap = gapFor(runIndex);
+        let used = 2;
+        let countOnRun = 0;
+        while (wi < words.length) {
+          const need = (countOnRun ? gap : 0) + measure(words[wi], runIndex);
+          if (need > length - used - 1.5) break;
+          used += need;
+          countOnRun += 1;
+          wi += 1;
+        }
+        if (!countOnRun) {
+          runIndex += 1;
+          continue;
+        }
+        runIndex += 1;
+      }
+    }
+    return true;
+  };
+
   for (let runIndex = 0; runIndex < runs.length; runIndex++) {
     const points = runs[runIndex];
     const length = pathLength(points);
     const gap = gapFor(runIndex);
     let used = 2;
-    const chosen: string[] = [];
-    const place = (word: string) => {
-      const need = (chosen.length ? gap : 0) + measure(word, runIndex);
+    const parts: string[] = [];
+    const place = (token: string) => {
+      const need = (parts.length ? gap : 0) + measure(token, runIndex);
       if (need > length - used - 1.5) return false;
-      chosen.push(word);
+      parts.push(token);
       used += need;
       return true;
     };
-    if (names.length) {
-      const name = names[nameCursor.i % names.length];
-      if (cannotFit(name)) nameCursor.i += 1;
-      else if (place(name)) nameCursor.i += 1;
-    }
-    const filler = verses.length ? verses : names;
-    const cursor = verses.length ? verseCursor : nameCursor;
-    // A short verse has to repeat. Stopping after one pass leaves the rest of a
-    // long whorl or arch as blank paper, which is not the print.
-    if (filler.length) {
-      let guard = 0;
-      while (used < length - 2 && guard++ < 500) {
-        const word = filler[cursor.i % filler.length];
-        if (measure(word, runIndex) < 0.4) {
-          cursor.i += 1;
+    const tokensFit = (tokens: string[]) => {
+      let trial = used;
+      let count = parts.length;
+      for (const token of tokens) {
+        const need = (count ? gap : 0) + measure(token, runIndex);
+        if (need > length - trial - 1.5) return false;
+        trial += need;
+        count += 1;
+      }
+      return true;
+    };
+
+    const startVerse = (words: string[]) => {
+      if (parts.length && !place(RIDGE_DIVIDER)) return "stop" as const;
+      let placed = 0;
+      while (verseWord < words.length && place(words[verseWord])) {
+        verseWord += 1;
+        placed += 1;
+      }
+      if (!placed) return "stop" as const;
+      if (verseWord >= words.length) {
+        verseWord = 0;
+        verseAt += 1;
+        owed = Math.max(0, owed - 1);
+        namesSinceVerse = 0;
+        return "more" as const;
+      }
+      return "stop" as const;
+    };
+
+    let guard = 0;
+    while (guard++ < 200) {
+      if (versesAt.length && verseWord > 0) {
+        const words = versesAt[verseAt % versesAt.length];
+        while (verseWord < words.length && place(words[verseWord])) verseWord += 1;
+        if (verseWord >= words.length) {
+          verseWord = 0;
+          verseAt += 1;
+          owed = Math.max(0, owed - 1);
+          namesSinceVerse = 0;
           continue;
         }
-        if (!place(word)) break;
-        cursor.i += 1;
+        // The next word does not fit here. The phrase continues on the next segment, with no name in between.
+        break;
       }
+
+      const words = versesAt.length ? versesAt[verseAt % versesAt.length] : null;
+      const fitsHere = words ? verseFits(runIndex, words, used, parts.length) : false;
+      const mustStart = Boolean(words && owed > 0 && fitsHere && !laterHolds(runIndex + 1, owed));
+      const namesRemain = names.length > 0 && namesPlaced < names.length;
+      const wantVerse = Boolean(
+        words && fitsHere && (mustStart || names.length === 0 || (namesSinceVerse >= namesPerGap && !namesRemain)),
+      );
+
+      if (wantVerse && words) {
+        if (startVerse(words) === "more") continue;
+        break;
+      }
+
+      if (!names.length) break;
+      const name = names[nameCursor.i % names.length];
+      if (cannotFitFrom(name, runIndex)) {
+        nameCursor.i += 1;
+        if (nameCursor.i > names.length * (runs.length + 2)) break;
+        continue;
+      }
+      const tokens = parts.length ? [RIDGE_DIVIDER, name] : [name];
+      if (tokensFit(tokens)) {
+        for (const token of tokens) place(token);
+        nameCursor.i += 1;
+        namesSinceVerse += 1;
+        namesPlaced += 1;
+        continue;
+      }
+      // Too short for the next name. The verse can still use it, instead of leaving the ridge blank.
+      if (words && fitsHere) {
+        if (startVerse(words) === "more") continue;
+      }
+      break;
     }
-    packed.push({ points, text: chosen.join(" ") });
+    packed.push({ points, text: parts.join(" ") });
   }
+  verseCursor.i = verseAt;
   return packed;
 }
 
 export function bodySources(names: string[] | undefined, scriptures: string[] | undefined, lines: string[]) {
   const people = (names ?? []).map((name) => name.replace(/\s+/g, " ").trim()).filter(Boolean);
-  const verses = (scriptures ?? []).flatMap((verse) => verse.replace(/\s+/g, " ").trim().split(" ").filter(Boolean));
+  const verses = (scriptures ?? []).map((verse) => verse.replace(/\s+/g, " ").trim()).filter(Boolean);
   if (!people.length && !verses.length) return { names: [] as string[], verses: wordsOf(lines) };
   return { names: people, verses };
 }
@@ -296,9 +446,9 @@ export function dedicationWords(style: PrintStyle, role: "core" | "secondary") {
 }
 
 export function roleScale(role: RidgeRole) {
-  // Dedications sit slightly larger, still inside 70% of the ridge period.
-  if (role === "core") return 1.08;
-  if (role === "secondary") return 1.05;
+  // Both dedications sit a step larger than the body, still inside 70% of the period.
+  // 0.64 × 1.09 stays under that cap.
+  if (role === "core" || role === "secondary") return 1.09;
   return 1;
 }
 

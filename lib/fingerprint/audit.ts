@@ -1,4 +1,4 @@
-import { fontSizeFor } from "./lettering";
+import { fontSizeFor, RIDGE_DIVIDER } from "./lettering";
 import type { PrintStyle } from "./types";
 
 export type Check = {
@@ -72,7 +72,18 @@ export function auditLayout(svg: string, style: PrintStyle, period: number): Che
     });
   }
 
+  const scriptures = (style.scriptures ?? []).map((verse) => verse.replace(/\s+/g, " ").trim()).filter(Boolean);
   const names = (style.names ?? []).map((name) => name.replace(/\s+/g, " ").trim()).filter(Boolean);
+  if (scriptures.length) {
+    const verdict = versesInOrder(bodyRunTexts(svg), scriptures, names);
+    checks.push({
+      id: "verses",
+      label: "Whole verses",
+      passed: verdict.ok,
+      detail: verdict.detail,
+    });
+  }
+
   if (names.length) {
     const missing: string[] = [];
     const seen = new Map<string, number>();
@@ -89,6 +100,76 @@ export function auditLayout(svg: string, style: PrintStyle, period: number): Che
     });
   }
   return checks;
+}
+
+function decodeXml(value: string) {
+  return value.replace(/&quot;/g, '"').replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
+}
+
+function bodyRunTexts(svg: string) {
+  const texts: string[] = [];
+  const re = /<text\b([^>]*)>([\s\S]*?)<\/text>/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(svg))) {
+    if (!/\bridge-body\b/.test(match[1])) continue;
+    const path = match[2].match(/<textPath\b[^>]*>([\s\S]*?)<\/textPath>/);
+    const raw = decodeXml(path ? path[1] : match[2]).replace(/\s+/g, " ").trim();
+    if (raw) texts.push(raw);
+  }
+  return texts;
+}
+
+function wordsOfText(text: string) {
+  return text.split(/\s+/).filter((word) => word && word !== RIDGE_DIVIDER);
+}
+
+/**
+ * Body text, in ridge order, must contain each scripture as a complete phrase,
+ * opening quote through the reference, repeating in the listed order.
+ * A name between the words, or a start in the middle of a verse, fails.
+ */
+function versesInOrder(runs: string[], scriptures: string[], names: string[]) {
+  const verses = scriptures.map((verse) => verse.split(/\s+/).filter(Boolean));
+  const nameSeqs = names
+    .map((name) => name.split(/\s+/).filter(Boolean))
+    .filter((words) => words.length)
+    .sort((a, b) => b.length - a.length);
+  const words = runs.flatMap(wordsOfText);
+  if (!words.length) return { ok: false, detail: "No verse text was placed on the ridges." };
+
+  const matchesAt = (index: number, seq: string[]) => {
+    if (index + seq.length > words.length) return false;
+    return seq.every((word, offset) => words[index + offset] === word);
+  };
+
+  let index = 0;
+  let verseAt = 0;
+  const finished: number[] = [];
+  while (index < words.length) {
+    const expected = verses[verseAt % verses.length];
+    if (matchesAt(index, expected)) {
+      finished.push(verseAt % verses.length);
+      verseAt += 1;
+      index += expected.length;
+      continue;
+    }
+    const name = nameSeqs.find((seq) => matchesAt(index, seq));
+    if (name) {
+      index += name.length;
+      continue;
+    }
+    if (words[index] === expected[0]) {
+      return { ok: false, detail: `“${expected[0]}…” is interrupted before ${expected[expected.length - 1]}.` };
+    }
+    if (verses.some((verse) => verse.slice(1).includes(words[index]))) {
+      return { ok: false, detail: `A verse starts mid-phrase at “${words[index]}”.` };
+    }
+    return { ok: false, detail: `Unexpected “${words[index]}” between verses.` };
+  }
+  if (finished.length < verses.length) return { ok: false, detail: "Not every verse appears as a complete phrase." };
+  const outOfOrder = finished.findIndex((at, order) => at !== order % verses.length);
+  if (outOfOrder >= 0) return { ok: false, detail: "The verses are out of order." };
+  return { ok: true, detail: `${finished.length} complete verses, in order.` };
 }
 
 export function layoutPassed(checks: Check[]) {

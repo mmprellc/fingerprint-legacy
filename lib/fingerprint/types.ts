@@ -89,12 +89,12 @@ export type PrintStyle = {
   /** Primary dedication, set along the innermost core ridges. */
   centerName?: string;
   centerDetail?: string;
-  /** Second dedication, set along the next ridges out, slightly larger. */
+  /** Second dedication, on the next ridges out, set a little heavier than the names. */
   secondaryName?: string;
   secondaryDetail?: string;
   /** Names repeated along the ridges, one phrase each. Spelled as given. */
   names?: string[];
-  /** Verses repeated along the ridges, in order. */
+  /** Whole verses, in order. A long verse continues onto the next ridges. */
   scriptures?: string[];
 };
 

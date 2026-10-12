@@ -138,12 +138,13 @@ export function buildPreviewSvg(
       for (const run of runs) {
         if (!run.text) continue;
         const size = fontSize * roleScale(run.role) * (run.role === "body" ? scale : 1);
+        const ink = run.role === "body" ? fill : "#1A1C1E";
         const id = `r${index++}`;
         defs.push(`<path id="${id}" d="${toPathD(run.points)}"/>`);
         const dy = (size * 0.38).toFixed(2);
         const tracking = run.role === "body" ? -size * 0.04 : -size * 0.045;
         texts.push(
-          `<text class="ridge ridge-${run.role}" font-size="${size.toFixed(2)}" letter-spacing="${tracking.toFixed(2)}" fill="${fill}" font-family="${escapeXml(opts?.fontFamily || font.family)}"><textPath href="#${id}" dy="${dy}">${escapeXml(run.text)}</textPath></text>`,
+          `<text class="ridge ridge-${run.role}" font-size="${size.toFixed(2)}" letter-spacing="${tracking.toFixed(2)}" fill="${ink}" font-family="${escapeXml(opts?.fontFamily || font.family)}"><textPath href="#${id}" dy="${dy}">${escapeXml(run.text)}</textPath></text>`,
         );
       }
     });

@@ -188,10 +188,11 @@ export async function renderArtwork(request: RenderRequest) {
     planned.forEach((runs, ridgeIndex) => {
       const rim = rims[ridgeIndex] ?? 0;
       const scale = bodyScale[ridgeIndex] ?? 1;
-      const ridgeInk = mixHex(ink, "#121416", Math.min(1, 0.18 + rim * 0.72));
+      const bodyInk = mixHex(ink, "#121416", Math.min(1, 0.18 + rim * 0.72));
       for (const run of runs) {
         if (!run.text) continue;
         const size = fontSize * roleScale(run.role) * (run.role === "body" ? scale : 1);
+        const ridgeInk = run.role === "body" ? bodyInk : mixHex(ink, "#121416", 0.86);
         const placed = run.points.map((point) => ({
           x: ox + (point.x - minX) * fit,
           y: oy + (point.y - minY) * fit,
