@@ -38,19 +38,29 @@ export function packBodyRuns(
   runs: Pt[][],
   names: string[],
   verses: string[],
-  measure: (word: string) => number,
-  space: number,
+  measure: (word: string, runIndex: number) => number,
+  space: number | ((runIndex: number) => number),
   nameCursor: { i: number },
   verseCursor: { i: number },
   ceiling: number,
 ): PackedRun[] {
   const packed: PackedRun[] = [];
-  for (const points of runs) {
+  const gapFor = (runIndex: number) => (typeof space === "number" ? space : space(runIndex));
+  const cannotFit = (word: string) => {
+    let best = 0;
+    runs.forEach((points, index) => {
+      best = Math.max(best, pathLength(points) - measure(word, index));
+    });
+    return best < 3 && best < ceiling;
+  };
+  for (let runIndex = 0; runIndex < runs.length; runIndex++) {
+    const points = runs[runIndex];
     const length = pathLength(points);
+    const gap = gapFor(runIndex);
     let used = 2;
     const chosen: string[] = [];
     const place = (word: string) => {
-      const need = (chosen.length ? space : 0) + measure(word);
+      const need = (chosen.length ? gap : 0) + measure(word, runIndex);
       if (need > length - used - 1.5) return false;
       chosen.push(word);
       used += need;
@@ -58,7 +68,7 @@ export function packBodyRuns(
     };
     if (names.length) {
       const name = names[nameCursor.i % names.length];
-      if (measure(name) > ceiling - 3) nameCursor.i += 1;
+      if (cannotFit(name)) nameCursor.i += 1;
       else if (place(name)) nameCursor.i += 1;
     }
     const filler = verses.length ? verses : names;
@@ -280,10 +290,20 @@ export function dedicationWords(style: PrintStyle, role: "core" | "secondary") {
 }
 
 export function roleScale(role: RidgeRole) {
-  // Dedications sit slightly larger and bolder, still inside 70% of the ridge period.
+  // Dedications sit slightly larger, still inside 70% of the ridge period.
   if (role === "core") return 1.08;
   if (role === "secondary") return 1.05;
   return 1;
+}
+
+/**
+ * Body type grows toward the outer rim so the silhouette reads darker from
+ * across the room. 0.64 × 1.09 stays inside 70% of the ridge period.
+ * Density comes from the letters themselves, never from a stroke under them.
+ */
+export function edgeTypeScale(rim: number) {
+  const t = Math.max(0, Math.min(1, rim));
+  return 1 + t * 0.09;
 }
 
 /** 0 in the interior, 1 on the outer rim, so the oval reads from across the room. */
@@ -358,6 +378,7 @@ export function planPortrait(
   period: number,
   measure: (word: string, role: RidgeRole) => number,
   gap: number,
+  bodyScale?: number[],
 ): PlannedRun[][] {
   const pairs: { role: "core" | "secondary"; phrase: string }[] = [];
   const corePhrase = [cleanLine(style.centerName), cleanLine(style.centerDetail)].filter(Boolean).join(" ");
@@ -432,12 +453,16 @@ export function planPortrait(
 
   const source = bodySources(style.names, style.scriptures, lines);
   const ceiling = slots.reduce((max, slot) => Math.max(max, pathLength(slot.points)), 0);
+  const scaleOf = (runIndex: number) => {
+    const scale = bodyScale?.[slots[runIndex]?.ridge ?? 0] ?? 1;
+    return scale > 0 ? scale : 1;
+  };
   const packed = packBodyRuns(
     slots.map((slot) => slot.points),
     source.names,
     source.verses,
-    (word) => measure(word, "body"),
-    gap,
+    (word, runIndex) => measure(word, "body") * scaleOf(runIndex),
+    (runIndex) => gap * scaleOf(runIndex),
     { i: 0 },
     { i: 0 },
     ceiling,

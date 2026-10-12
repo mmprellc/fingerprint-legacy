@@ -96,7 +96,7 @@ export function StudioClient({
       prints.map(toPreview),
       previewStyle,
       period,
-      { transparent: view === "overlay" || view === "lines", fontFamily: "inherit", understroke: view !== "lines" && view !== "overlay" },
+      { transparent: view === "overlay" || view === "lines", fontFamily: "inherit" },
     );
     if (view === "lines") {
       const strokes = prints.flatMap((print) => mapPrint(toPreview(print))).map((ridge) => {

@@ -2,8 +2,7 @@ import path from "node:path";
 import opentype from "opentype.js";
 import { PDFDocument } from "pdf-lib";
 import sharp from "sharp";
-import { toPathD } from "./geometry";
-import { fontSizeFor, placeGlyphs, planPortrait, poseAt, rimWeights, roleScale } from "./lettering";
+import { edgeTypeScale, fontSizeFor, placeGlyphs, planPortrait, poseAt, rimWeights, roleScale } from "./lettering";
 import { fontById, mapPrint, presetById } from "./preview";
 import type { PreviewPrint } from "./preview";
 import type { PrintStyle, Pt } from "./types";
@@ -170,6 +169,7 @@ export async function renderArtwork(request: RenderRequest) {
   request.prints.forEach((print) => {
     const ridges = mapPrint(print);
     const rims = rimWeights(ridges);
+    const bodyScale = rims.map((rim) => edgeTypeScale(rim));
     const sourceSize = fontSizeFor(request.period, request.style.textScale || 1);
     const planned = planPortrait(
       ridges,
@@ -178,37 +178,28 @@ export async function renderArtwork(request: RenderRequest) {
       request.period,
       (word, role) => {
         const size = sourceSize * roleScale(role);
-        return measureToken(face, word, size, -size * 0.05, size * 0.16);
+        const tracking = role === "body" ? 0.04 : 0.045;
+        return measureToken(face, word, size, -size * tracking, size * 0.16);
       },
       sourceSize * roleScale("body") * 0.16,
+      bodyScale,
     );
     const body: string[] = [];
     planned.forEach((runs, ridgeIndex) => {
       const rim = rims[ridgeIndex] ?? 0;
-      const ridgeInk = mixHex(ink, "#101214", Math.min(1, 0.38 + rim * 0.55));
-      const points = ridges[ridgeIndex].points.map((point) => ({
-        x: ox + (point.x - minX) * fit,
-        y: oy + (point.y - minY) * fit,
-      }));
-      const ridgeStroke = request.period * fit * (0.15 + 0.12 * rim);
-      if (pathLengthOf(points) >= fontSize * 0.9) {
-        body.push(
-          `<path d="${toPathD(points)}" fill="none" stroke="${ridgeInk}" stroke-width="${ridgeStroke.toFixed(2)}" stroke-linecap="round" stroke-linejoin="round"/>`,
-        );
-      }
+      const scale = bodyScale[ridgeIndex] ?? 1;
+      const ridgeInk = mixHex(ink, "#121416", Math.min(1, 0.18 + rim * 0.72));
       for (const run of runs) {
         if (!run.text) continue;
-        const size = fontSize * roleScale(run.role);
-        const weight = size * (run.role === "core" ? 0.045 : run.role === "secondary" ? 0.034 : 0.01 + rim * 0.05);
+        const size = fontSize * roleScale(run.role) * (run.role === "body" ? scale : 1);
         const placed = run.points.map((point) => ({
           x: ox + (point.x - minX) * fit,
           y: oy + (point.y - minY) * fit,
         }));
-        const glyphs = layoutRun(face, run.text, placed, size, run.role === "body" ? 0.05 + rim * 0.03 : 0.045);
-        const stroke = weight > 0.12 ? ` stroke="${ridgeInk}" stroke-width="${weight.toFixed(2)}" stroke-linejoin="round"` : "";
+        const glyphs = layoutRun(face, run.text, placed, size, run.role === "body" ? 0.04 : 0.045);
         for (const glyph of glyphs) {
           body.push(
-            `<g transform="translate(${glyph.x.toFixed(2)} ${glyph.y.toFixed(2)}) rotate(${glyph.angle.toFixed(2)})"><path d="${glyph.d}" fill="${ridgeInk}"${stroke}/></g>`,
+            `<g transform="translate(${glyph.x.toFixed(2)} ${glyph.y.toFixed(2)}) rotate(${glyph.angle.toFixed(2)})"><path d="${glyph.d}" fill="${ridgeInk}"/></g>`,
           );
         }
       }
