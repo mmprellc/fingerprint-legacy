@@ -1808,6 +1808,9 @@ export function extractFromGray(grayIn: Float32Array, widthIn: number, heightIn:
     warnings,
     ridgesAreDark,
     mask: options.keepMask ? prep.mask : undefined,
+    gray: options.keepMask ? gray : undefined,
+    orient: options.keepMask ? prep.orient : undefined,
+    coherence: options.keepMask ? prep.coherence : undefined,
     debug,
   };
 }

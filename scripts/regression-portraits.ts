@@ -28,6 +28,15 @@ const shortStyle: PrintStyle = {
 
 type Prepared = { gray: Float32Array; width: number; height: number; png: Buffer };
 
+/** The source files are edge-to-edge. A paper margin keeps the crop gate from reading a full card as cut off. */
+async function padPrint(file: string) {
+  const padded = await sharp(fs.readFileSync(file))
+    .extend({ top: 96, bottom: 96, left: 96, right: 96, background: "#f4f1ea" })
+    .jpeg()
+    .toBuffer();
+  return prepareBuffer(padded);
+}
+
 async function prepareBuffer(input: Buffer): Promise<Prepared> {
   const prepared = sharp(input).rotate();
   const meta = await prepared.metadata();
@@ -156,6 +165,18 @@ async function main() {
       expect: { kind: "pass" },
     },
     {
+      id: "real-whorl",
+      style: shortStyle,
+      image: padPrint(path.join(process.cwd(), "fixtures/prints/plain-whorl.jpg")),
+      expect: { kind: "pass" },
+    },
+    {
+      id: "real-arch",
+      style: shortStyle,
+      image: padPrint(path.join(process.cwd(), "fixtures/prints/tented-arch.jpg")),
+      expect: { kind: "pass" },
+    },
+    {
       id: "too-blurry",
       style: randyCzyzStyle,
       image: prepareBuffer(await sharp(randy).blur(7).jpeg().toBuffer()),
@@ -207,7 +228,12 @@ async function main() {
     const failed = result.attempts.flatMap((attempt) =>
       attempt.checks.filter((check) => !check.passed).map((check) => `${attempt.profile}:${check.id}`),
     );
-    const line = `${ok ? "pass" : "FAIL"} ${item.id} accepted=${result.accepted} profile=${result.attempts.find((attempt) => attempt.passed)?.profile ?? "-"} retake=${result.retake?.reason ?? "-"} sharp=${result.metrics.sharpness.toFixed(1)} contrast=${result.metrics.contrast.toFixed(1)} border=${result.metrics.borderInk.toFixed(2)} fill=${result.metrics.fill.toFixed(2)} ${failed.join(",")}`;
+    const scored = result.attempts.find((attempt) => attempt.passed) ?? result.attempts[0];
+    const fidelity = (scored?.checks ?? [])
+      .filter((check) => check.id === "coverage" || check.id === "shape" || check.id === "flow" || check.id === "likeness")
+      .map((check) => `${check.id}=${check.detail.replace(/^.*?(\d+%|\d+\.\d+).*/, "$1")}`)
+      .join(" ");
+    const line = `${ok ? "pass" : "FAIL"} ${item.id} accepted=${result.accepted} profile=${result.attempts.find((attempt) => attempt.passed)?.profile ?? "-"} retake=${result.retake?.reason ?? "-"} sharp=${result.metrics.sharpness.toFixed(1)} contrast=${result.metrics.contrast.toFixed(1)} border=${result.metrics.borderInk.toFixed(2)} fill=${result.metrics.fill.toFixed(2)} ${fidelity} ${failed.join(",")}`;
     rows.push(line);
     console.log(`${line} (${((Date.now() - started) / 1000).toFixed(1)}s)`);
     let words: Buffer | null = null;

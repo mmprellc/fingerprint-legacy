@@ -48,8 +48,14 @@ export type ExtractResult = {
   ridges: Ridge[];
   warnings: string[];
   ridgesAreDark: boolean;
-  /** Present only when keepMask was set. */
+  /** Present only when keepMask was set. Not sent to the browser. */
   mask?: Uint8Array;
+  /** Working photo, same grid as `mask`. */
+  gray?: Float32Array;
+  /** Ridge direction in radians, same grid as `mask`. */
+  orient?: Float32Array;
+  /** 0–1 confidence of `orient`. */
+  coherence?: Float32Array;
   debug?: ExtractDebug;
 };
 

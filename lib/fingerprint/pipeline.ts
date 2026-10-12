@@ -1,4 +1,5 @@
 import { auditLayout, capHeight, legibleScale, type Check } from "./audit";
+import { auditFidelity } from "./fidelity";
 import { extractFromGray } from "./engine";
 import { buildPreviewSvg } from "./preview";
 import type { ExtractProfile, ExtractResult, PrintStyle, Pt, Ridge } from "./types";
@@ -226,7 +227,6 @@ function auditGeometry(result: ExtractResult): Check[] {
   const { width: w, height: h, period, ridges } = result;
   if (!mask || ridges.length < 8 || period < 4) {
     return [
-      { id: "coverage", label: "Coverage of the ink", passed: false, detail: `${ridges.length} ridges, period ${period.toFixed(1)}.` },
       { id: "inside-mask", label: "Text inside the silhouette", passed: false, detail: "The silhouette was not usable." },
       { id: "spacing", label: "Collision-free spacing", passed: false, detail: "Not enough ridges to measure spacing." },
     ];
@@ -250,20 +250,6 @@ function auditGeometry(result: ExtractResult): Check[] {
       }
     }
   });
-
-  let ink = 0;
-  let hit = 0;
-  const step = 4;
-  for (let y = 0; y < h; y += step) {
-    const row = y * w;
-    for (let x = 0; x < w; x += step) {
-      if (!mask[row + x]) continue;
-      ink++;
-      if (grid.nearest(x, y) <= period * 0.65) hit++;
-    }
-  }
-  const cover = hit / Math.max(1, ink);
-  const covered = cover >= 0.82;
 
   let samples = 0;
   let outside = 0;
@@ -305,7 +291,6 @@ function auditGeometry(result: ExtractResult): Check[] {
   const spaced = closeFrac <= 0.3 && spacingP50 >= period * 0.75 && spacingP50 <= period * 1.45;
 
   return [
-    { id: "coverage", label: "Coverage of the ink", passed: covered, detail: `${Math.round(cover * 100)}% of the silhouette has a ridge nearby.` },
     { id: "inside-mask", label: "Text inside the silhouette", passed: inside, detail: inside ? "The words stay inside the ink." : `${Math.round(outsideFrac * 100)}% of the text sits outside the ink.` },
     {
       id: "spacing",
@@ -322,7 +307,8 @@ function attemptScore(checks: Check[]) {
 
 function unmatched(checks: Check[]): RetakeGuidance {
   const names = checks.find((check) => check.id === "names" && !check.passed);
-  const geometryOk = checks.filter((check) => check.id === "coverage" || check.id === "inside-mask" || check.id === "spacing").every((check) => check.passed);
+  const geometryIds = new Set(["coverage", "shape", "flow", "likeness", "inside-mask", "spacing"]);
+  const geometryOk = checks.filter((check) => geometryIds.has(check.id)).every((check) => check.passed);
   if (names && geometryOk) {
     return retake(
       "unmatched",
@@ -405,7 +391,7 @@ export function producePortrait(
       styled,
       extracted.period,
     ).svg;
-    const checks = [...auditGeometry(extracted), ...auditLayout(svg, styled, extracted.period)];
+    const checks = [...auditFidelity(extracted, styled), ...auditGeometry(extracted), ...auditLayout(svg, styled, extracted.period)];
     const passed = checks.every((check) => check.passed);
     attempts.push({ profile: profile.id, passed, checks });
     const score = attemptScore(checks);

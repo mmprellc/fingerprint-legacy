@@ -73,10 +73,16 @@ export function packBodyRuns(
     }
     const filler = verses.length ? verses : names;
     const cursor = verses.length ? verseCursor : nameCursor;
+    // A short verse has to repeat. Stopping after one pass leaves the rest of a
+    // long whorl or arch as blank paper, which is not the print.
     if (filler.length) {
       let guard = 0;
-      while (guard++ < filler.length + 2) {
+      while (used < length - 2 && guard++ < 500) {
         const word = filler[cursor.i % filler.length];
+        if (measure(word, runIndex) < 0.4) {
+          cursor.i += 1;
+          continue;
+        }
         if (!place(word)) break;
         cursor.i += 1;
       }
