@@ -115,7 +115,12 @@ export function rdp(points: Pt[], epsilon: number): Pt[] {
 }
 
 export function finishRidge(points: Pt[], closed: boolean, minLength: number): Ridge | null {
-  if (points.length < 4) return null;
+  if (points.length < 2) return null;
+  if (points.length < 4) {
+    const length = pathLength(points);
+    if (length < minLength) return null;
+    return { points: points.slice(), closed, length };
+  }
   let pts = smoothPath(points, 2);
   pts = smoothPath(pts, 2);
   pts = resamplePath(pts, 2.4);
@@ -181,6 +186,81 @@ export function transformPoints(points: Pt[], m: { tx: number; ty: number; rotat
     const y = (p.y - m.cy) * m.scale;
     return { x: m.cx + x * c - y * s + m.tx, y: m.cy + x * s + y * c + m.ty };
   });
+}
+
+/** Join ridge endings that face each other across a short gap, so a broken skeleton becomes one continuous path. */
+export function joinRidges(ridges: Ridge[], period: number): Ridge[] {
+  const maxGap = Math.max(6, period * 1.35);
+  type Item = { points: Pt[]; closed: boolean };
+  const items: Item[] = ridges
+    .filter((ridge) => ridge.points.length > 1)
+    .map((ridge) => ({ points: ridge.points.slice(), closed: ridge.closed }));
+
+  const outward = (points: Pt[], end: 0 | 1) => {
+    if (end === 0) {
+      const a = points[0];
+      const b = points[Math.min(points.length - 1, 4)];
+      return norm(a.x - b.x, a.y - b.y);
+    }
+    const a = points[points.length - 1];
+    const b = points[Math.max(0, points.length - 5)];
+    return norm(a.x - b.x, a.y - b.y);
+  };
+  const tip = (points: Pt[], end: 0 | 1) => (end === 0 ? points[0] : points[points.length - 1]);
+
+  let guard = 0;
+  while (guard++ < items.length + 4) {
+    let bestI = -1;
+    let bestJ = -1;
+    let bestEndI: 0 | 1 = 0;
+    let bestEndJ: 0 | 1 = 0;
+    let bestD = maxGap;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].closed) continue;
+      for (const endI of [0, 1] as const) {
+        const a = tip(items[i].points, endI);
+        const dir = outward(items[i].points, endI);
+        for (let j = i + 1; j < items.length; j++) {
+          if (items[j].closed) continue;
+          for (const endJ of [0, 1] as const) {
+            const b = tip(items[j].points, endJ);
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist < 1.5 || dist >= bestD) continue;
+            const ux = dx / dist;
+            const uy = dy / dist;
+            if (dir.x * ux + dir.y * uy < 0.82) continue;
+            const dirJ = outward(items[j].points, endJ);
+            if (dirJ.x * ux + dirJ.y * uy > -0.55) continue;
+            bestD = dist;
+            bestI = i;
+            bestJ = j;
+            bestEndI = endI;
+            bestEndJ = endJ;
+          }
+        }
+      }
+    }
+    if (bestI < 0) break;
+    const left = bestEndI === 1 ? items[bestI].points : items[bestI].points.slice().reverse();
+    const right = bestEndJ === 0 ? items[bestJ].points : items[bestJ].points.slice().reverse();
+    items[bestI] = { points: left.concat(right.slice(1)), closed: false };
+    items.splice(bestJ, 1);
+  }
+
+  const out: Ridge[] = [];
+  for (const item of items) {
+    const ridge = finishRidge(item.points, item.closed, Math.max(8, period * 2));
+    if (ridge) out.push(ridge);
+  }
+  out.sort((a, b) => b.length - a.length);
+  return out;
+}
+
+function norm(x: number, y: number) {
+  const l = Math.hypot(x, y) || 1;
+  return { x: x / l, y: y / l };
 }
 
 export function escapeXml(value: string) {

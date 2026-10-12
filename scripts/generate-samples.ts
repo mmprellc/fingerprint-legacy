@@ -1,9 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
-import { extractFromGray } from "../lib/fingerprint/engine";
 import { renderArtwork } from "../lib/fingerprint/render-print";
-import { synthesizePrint } from "../lib/fingerprint/synthesize";
+import { printInkSvg, synthesizePrint } from "../lib/fingerprint/synthesize";
 import type { Ridge } from "../lib/fingerprint/types";
 
 const words = {
@@ -35,21 +34,20 @@ const words = {
 
 async function writePrint(kind: "loop" | "whorl", name: string) {
   const synth = synthesizePrint(kind, kind === "loop" ? 4 : 9);
-  const extracted = extractFromGray(synth.gray, synth.width, synth.height, { ridges: "dark", rescale: false });
   const dir = path.join(process.cwd(), "public", "samples");
   fs.mkdirSync(dir, { recursive: true });
-  await sharp(synth.rgba, { raw: { width: synth.width, height: synth.height, channels: 4 } })
-    .png()
-    .toFile(path.join(dir, `${name}.png`));
+  const ink = await sharp(Buffer.from(printInkSvg(synth))).png().toBuffer();
+  await sharp(ink).toFile(path.join(dir, `${name}.png`));
   const payload = {
-    width: extracted.width,
-    height: extracted.height,
-    period: extracted.period,
-    ridges: extracted.ridges.map(slim),
+    width: synth.width,
+    height: synth.height,
+    period: synth.period,
+    ridges: synth.ridges.map(slim),
   };
   fs.writeFileSync(path.join(dir, `${name}.json`), JSON.stringify(payload));
-  console.log(`${name}: ridges ${extracted.ridges.length}, period ${extracted.period.toFixed(2)}, truth ${synth.ridges.length}`);
-  return { synth, extracted };
+  const mean = synth.ridges.reduce((sum, ridge) => sum + ridge.length, 0) / Math.max(1, synth.ridges.length);
+  console.log(`${name}: ridges ${synth.ridges.length}, period ${synth.period.toFixed(2)}, mean length ${mean.toFixed(0)}`);
+  return { synth, ink };
 }
 
 function slim(ridge: Ridge) {
@@ -72,14 +70,14 @@ async function main() {
   const memorial = await renderArtwork({
     prints: [
       {
-        ridges: loop.extracted.ridges,
-        width: loop.extracted.width,
-        height: loop.extracted.height,
+        ridges: loop.synth.ridges,
+        width: loop.synth.width,
+        height: loop.synth.height,
         lines: words.memorial,
       },
     ],
     style: { font: "baskerville", preset: "charcoal", textScale: 1, title: "Margaret Hale", script: "Always with you." },
-    period: loop.extracted.period,
+    period: loop.synth.period,
     dpi: 120,
   });
   fs.writeFileSync(path.join(gallery, "memorial.png"), memorial.png);
@@ -87,14 +85,14 @@ async function main() {
   const retirement = await renderArtwork({
     prints: [
       {
-        ridges: whorl.extracted.ridges,
-        width: whorl.extracted.width,
-        height: whorl.extracted.height,
+        ridges: whorl.synth.ridges,
+        width: whorl.synth.width,
+        height: whorl.synth.height,
         lines: words.retirement,
       },
     ],
     style: { font: "baskerville", preset: "slate", textScale: 1, title: "Elias Ward", script: "Well done." },
-    period: whorl.extracted.period,
+    period: whorl.synth.period,
     dpi: 120,
   });
   fs.writeFileSync(path.join(gallery, "retirement.png"), retirement.png);
@@ -102,24 +100,24 @@ async function main() {
   const wedding = await renderArtwork({
     prints: [
       {
-        ridges: loop.extracted.ridges,
-        width: loop.extracted.width,
-        height: loop.extracted.height,
+        ridges: loop.synth.ridges,
+        width: loop.synth.width,
+        height: loop.synth.height,
         lines: words.weddingA,
       },
       {
-        ridges: whorl.extracted.ridges,
-        width: whorl.extracted.width,
-        height: whorl.extracted.height,
+        ridges: whorl.synth.ridges,
+        width: whorl.synth.width,
+        height: whorl.synth.height,
         lines: words.weddingB,
-        tx: loop.extracted.width * 0.34,
+        tx: loop.synth.width * 0.34,
         ty: 30,
         rotation: -8,
         scale: 0.92,
       },
     ],
     style: { font: "cormorant", preset: "charcoal", textScale: 1, title: "Elena and Jonah", script: "June fourteenth" },
-    period: loop.extracted.period,
+    period: loop.synth.period,
     dpi: 110,
   });
   fs.writeFileSync(path.join(gallery, "wedding.png"), wedding.png);
@@ -127,14 +125,14 @@ async function main() {
   const founder = await renderArtwork({
     prints: [
       {
-        ridges: whorl.extracted.ridges,
-        width: whorl.extracted.width,
-        height: whorl.extracted.height,
+        ridges: whorl.synth.ridges,
+        width: whorl.synth.width,
+        height: whorl.synth.height,
         lines: ["Northline", "founded 1998", "the first workshop", "keep the promise", "the people who stayed"],
       },
     ],
     style: { font: "cormorant", preset: "gold", textScale: 1, title: "Northline", script: "From the first mark." },
-    period: whorl.extracted.period,
+    period: whorl.synth.period,
     dpi: 110,
   });
   fs.writeFileSync(path.join(gallery, "founder.png"), founder.png);
@@ -142,36 +140,37 @@ async function main() {
   const sameFrame = await renderArtwork({
     prints: [
       {
-        ridges: loop.extracted.ridges,
-        width: loop.extracted.width,
-        height: loop.extracted.height,
+        ridges: loop.synth.ridges,
+        width: loop.synth.width,
+        height: loop.synth.height,
         lines: words.memorial,
       },
     ],
     style: { font: "baskerville", preset: "charcoal", textScale: 1, title: "", script: "" },
-    period: loop.extracted.period,
-    dpi: 90,
+    period: loop.synth.period,
+    matchSource: true,
   });
-  const original = await sharp(loop.synth.rgba, {
-    raw: { width: loop.synth.width, height: loop.synth.height, channels: 4 },
-  })
-    .resize({ height: 900, fit: "inside" })
-    .png()
-    .toBuffer({ resolveWithObject: true });
-  const wordsPng = await sharp(sameFrame.png).resize({ height: 900, fit: "inside" }).png().toBuffer({ resolveWithObject: true });
   const gap = 36;
   const label = 48;
-  const w = original.info.width + wordsPng.info.width + gap * 3;
-  const h = Math.max(original.info.height, wordsPng.info.height) + label + gap;
+  const left = loop.ink;
+  const right = sameFrame.png;
+  const leftMeta = await sharp(left).metadata();
+  const rightMeta = await sharp(right).metadata();
+  const lw = leftMeta.width ?? loop.synth.width;
+  const rw = rightMeta.width ?? loop.synth.width;
+  const lh = leftMeta.height ?? loop.synth.height;
+  const rh = rightMeta.height ?? loop.synth.height;
+  const w = lw + rw + gap * 3;
+  const h = Math.max(lh, rh) + label + gap;
   const board = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">
     <rect width="100%" height="100%" fill="#F6F1E8"/>
     <text x="${gap}" y="32" font-family="Georgia" font-size="20" fill="#34383A">Original print</text>
-    <text x="${original.info.width + gap * 2}" y="32" font-family="Georgia" font-size="20" fill="#34383A">Word-filled ridges</text>
+    <text x="${lw + gap * 2}" y="32" font-family="Georgia" font-size="20" fill="#34383A">Word-filled ridges</text>
   </svg>`;
   await sharp(Buffer.from(board))
     .composite([
-      { input: original.data, left: gap, top: label },
-      { input: wordsPng.data, left: original.info.width + gap * 2, top: label },
+      { input: left, left: gap, top: label },
+      { input: right, left: lw + gap * 2, top: label },
     ])
     .png()
     .toFile(path.join(process.cwd(), "public", "samples", "side-by-side.png"));

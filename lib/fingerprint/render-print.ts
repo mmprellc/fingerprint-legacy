@@ -2,8 +2,9 @@ import path from "node:path";
 import opentype from "opentype.js";
 import { PDFDocument } from "pdf-lib";
 import sharp from "sharp";
-import { pathLength, pointAtLength } from "./geometry";
-import { corpusOf, fontById, fontSizeFor, mapPrint, presetById } from "./preview";
+import { toPathD } from "./geometry";
+import { fontSizeFor, packRuns, placeGlyphs, poseAt, ridgeWidth, UNDERSTROKE, uprightRuns, wordsOf } from "./lettering";
+import { fontById, mapPrint, presetById } from "./preview";
 import type { PreviewPrint } from "./preview";
 import type { PrintStyle, Pt } from "./types";
 
@@ -28,40 +29,46 @@ function hexToRgb(hex: string) {
   };
 }
 
-function layoutLine(font: GlyphFont, stream: string, cursor: { i: number }, points: Pt[], fontSize: number) {
-  const length = pathLength(points);
-  const target = length * 0.93;
-  const chars: string[] = [];
-  const glyphs: opentype.Glyph[] = [];
+function advanceOf(font: GlyphFont, ch: string, fontSize: number) {
+  const glyph = font.charToGlyph(ch);
+  return ((glyph.advanceWidth ?? font.unitsPerEm * 0.5) / font.unitsPerEm) * fontSize;
+}
+
+function measureWord(font: GlyphFont, word: string, fontSize: number, tracking: number) {
   let width = 0;
-  let guard = 0;
-  while (width < target && guard < 500) {
-    const ch = stream[cursor.i % stream.length];
-    const glyph = font.charToGlyph(ch);
-    const advance = ((glyph.advanceWidth ?? font.unitsPerEm * 0.5) / font.unitsPerEm) * fontSize;
-    if (width + advance > target && chars.length > 2) break;
-    chars.push(ch);
-    glyphs.push(glyph);
-    width += advance;
-    cursor.i++;
-    guard++;
-  }
-  const gap = chars.length ? Math.max(-0.35, (target - width) / chars.length) : 0;
-  let dist = Math.max(1, gap);
+  for (const ch of word) width += advanceOf(font, ch, fontSize) + tracking;
+  return Math.max(0, width - tracking);
+}
+
+function layoutRun(font: GlyphFont, text: string, points: Pt[], fontSize: number) {
+  const tracking = -fontSize * 0.055;
+  const glyphs = placeGlyphs(
+    text,
+    pathLengthOf(points),
+    (ch) => advanceOf(font, ch, fontSize),
+    fontSize * 0.16,
+    tracking,
+  );
   const placed: { d: string; x: number; y: number; angle: number }[] = [];
-  for (let n = 0; n < glyphs.length; n++) {
-    const glyph = glyphs[n];
-    const advance = ((glyph.advanceWidth ?? font.unitsPerEm * 0.5) / font.unitsPerEm) * fontSize;
-    const pose = pointAtLength(points, Math.min(length - 0.5, dist + advance / 2));
+  for (const item of glyphs) {
+    const glyph = font.charToGlyph(item.text);
+    const pose = poseAt(points, item.distance);
     const box = glyph.getBoundingBox();
     const scale = fontSize / font.unitsPerEm;
     const cx = ((glyph.advanceWidth ?? font.unitsPerEm * 0.5) * scale) / 2;
     const cy = -((box.y1 + box.y2) / 2) * scale;
     const d = glyph.getPath(-cx, -cy, fontSize).toPathData(1);
     if (d) placed.push({ d, x: pose.x, y: pose.y, angle: (pose.angle * 180) / Math.PI });
-    dist += advance + gap;
   }
   return placed;
+}
+
+function pathLengthOf(points: Pt[]) {
+  let length = 0;
+  for (let i = 1; i < points.length; i++) {
+    length += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+  }
+  return length;
 }
 
 export type RenderRequest = {
@@ -71,6 +78,8 @@ export type RenderRequest = {
   inches?: [number, number] | null;
   dpi?: number;
   frame?: boolean;
+  /** Draw in the source pixel grid, with no paper margin, so the portrait lines up with the print. */
+  matchSource?: boolean;
 };
 
 export async function renderArtwork(request: RenderRequest) {
@@ -100,14 +109,34 @@ export async function renderArtwork(request: RenderRequest) {
   }
   const artW = Math.max(40, maxX - minX);
   const artH = Math.max(40, maxY - minY);
-  const captionBlock = request.style.title || request.style.script ? Math.round(artH * 0.14) : Math.round(artH * 0.04);
+  const captionBlock = request.matchSource ? 0 : request.style.title || request.style.script ? Math.round(artH * 0.14) : Math.round(artH * 0.04);
 
   const dpi = request.dpi ?? 200;
   let paperW: number;
   let paperH: number;
-  if (request.inches) {
+  let fit: number;
+  let ox: number;
+  let oy: number;
+  let captionPx = 0;
+  let margin = 0;
+  if (request.matchSource) {
+    paperW = Math.max(...request.prints.map((print) => Math.ceil((print.tx ?? 0) + print.width * (print.scale ?? 1))));
+    paperH = Math.max(...request.prints.map((print) => Math.ceil((print.ty ?? 0) + print.height * (print.scale ?? 1))));
+    fit = 1;
+    ox = 0;
+    oy = 0;
+    minX = 0;
+    minY = 0;
+  } else if (request.inches) {
     paperW = Math.round(request.inches[0] * dpi);
     paperH = Math.round(request.inches[1] * dpi);
+    captionPx = request.style.title || request.style.script ? Math.round(paperH * 0.11) : Math.round(paperH * 0.04);
+    margin = Math.round(Math.min(paperW, paperH) * 0.06);
+    const availW = paperW - margin * 2;
+    const availH = paperH - margin * 2 - captionPx;
+    fit = Math.min(availW / artW, availH / artH);
+    ox = (paperW - artW * fit) / 2;
+    oy = margin + (availH - artH * fit) / 2;
   } else {
     const long = 2200;
     const aspect = artW / (artH + captionBlock);
@@ -118,39 +147,46 @@ export async function renderArtwork(request: RenderRequest) {
       paperH = long;
       paperW = Math.round(long * aspect);
     }
+    captionPx = request.style.title || request.style.script ? Math.round(paperH * 0.11) : Math.round(paperH * 0.04);
+    margin = Math.round(Math.min(paperW, paperH) * 0.06);
+    const availW = paperW - margin * 2;
+    const availH = paperH - margin * 2 - captionPx;
+    fit = Math.min(availW / artW, availH / artH);
+    ox = (paperW - artW * fit) / 2;
+    oy = margin + (availH - artH * fit) / 2;
   }
-
-  const captionPx = request.style.title || request.style.script ? Math.round(paperH * 0.11) : Math.round(paperH * 0.04);
-  const margin = Math.round(Math.min(paperW, paperH) * 0.06);
-  const availW = paperW - margin * 2;
-  const availH = paperH - margin * 2 - captionPx;
-  const fit = Math.min(availW / artW, availH / artH);
-  const ox = (paperW - artW * fit) / 2;
-  const oy = margin + (availH - artH * fit) / 2;
   const fontSize = fontSizeFor(request.period, request.style.textScale || 1) * fit;
   const ink = preset.ink;
+  const bridge = ridgeWidth(request.period) * fit * UNDERSTROKE;
+  const tracking = -fontSize * 0.055;
   const groups: string[] = [];
   request.prints.forEach((print) => {
-    const streamText = corpusOf(print.lines);
-    if (!streamText) return;
-    const cursor = { i: 0 };
+    const words = wordsOf(print.lines);
+    const measure = (word: string) => measureWord(face, word, fontSize, tracking);
     const ridges = mapPrint(print);
     for (const ridge of ridges) {
       const points = ridge.points.map((point) => ({
         x: ox + (point.x - minX) * fit,
         y: oy + (point.y - minY) * fit,
       }));
-      if (pathLength(points) < fontSize * 2) continue;
-      const glyphs = layoutLine(face, streamText, cursor, points, fontSize);
-      for (const glyph of glyphs) {
-        groups.push(
-          `<g transform="translate(${glyph.x.toFixed(2)} ${glyph.y.toFixed(2)}) rotate(${glyph.angle.toFixed(2)})"><path d="${glyph.d}" fill="${ink}"/></g>`,
-        );
+      if (pathLengthOf(points) < fontSize * 1.4) continue;
+      groups.push(
+        `<path d="${toPathD(points)}" fill="none" stroke="${ink}" stroke-width="${bridge.toFixed(2)}" stroke-linecap="round" stroke-linejoin="round"/>`,
+      );
+      const packed = packRuns(uprightRuns(points), words, measure, fontSize * 0.16);
+      for (const run of packed) {
+        if (!run.text) continue;
+        const glyphs = layoutRun(face, run.text, run.points, fontSize);
+        for (const glyph of glyphs) {
+          groups.push(
+            `<g transform="translate(${glyph.x.toFixed(2)} ${glyph.y.toFixed(2)}) rotate(${glyph.angle.toFixed(2)})"><path d="${glyph.d}" fill="${ink}"/></g>`,
+          );
+        }
       }
     }
   });
 
-  const caption = captionSvg(request.style, titleFace, scriptFace, paperW, paperH - margin * 0.35, ink, captionPx);
+  const caption = request.matchSource ? "" : captionSvg(request.style, titleFace, scriptFace, paperW, paperH - margin * 0.35, ink, captionPx);
   const frame = request.frame
     ? `<rect x="${margin / 2}" y="${margin / 2}" width="${paperW - margin}" height="${paperH - margin}" fill="none" stroke="#B89A68" stroke-width="${Math.max(2, dpi * 0.01)}"/>`
     : "";

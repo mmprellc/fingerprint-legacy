@@ -82,14 +82,14 @@ export function StudioClient({
       prints.map(toPreview),
       { ...style, title: "", script: "" },
       period,
-      { transparent: view === "overlay" || view === "lines", fontFamily: "inherit" },
+      { transparent: view === "overlay" || view === "lines", fontFamily: "inherit", understroke: view !== "lines" && view !== "overlay" },
     );
     if (view === "lines") {
       const strokes = prints.flatMap((print) => mapPrint(toPreview(print))).map((ridge) => {
         const d = ridge.points.map((point, index) => `${index === 0 ? "M" : "L"}${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(" ");
         return `<path d="${d}" fill="none" stroke="${preset.ink}" stroke-width="${Math.max(1, period * 0.16)}" stroke-linecap="round"/>`;
       });
-      return built.svg.replace(/<text[\s\S]*<\/text>/g, "").replace("</svg>", `${strokes.join("")}</svg>`);
+      return built.svg.replace(/<text[\s\S]*?<\/text>/g, "").replace(/<g class="ridge-ink">[\s\S]*?<\/g>/, "").replace("</svg>", `${strokes.join("")}</svg>`);
     }
     return built.svg;
   }, [prints, style, period, view, preset.ink]);

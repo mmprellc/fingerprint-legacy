@@ -1,5 +1,6 @@
 import type { Pt, Ridge } from "./types";
-import { pathLength, ridgeFromPoints } from "./geometry";
+import { pathLength, resamplePath, ridgeFromPoints, smoothPath, toPathD } from "./geometry";
+import { ridgeWidth } from "./lettering";
 
 export type SynthPrint = {
   width: number;
@@ -12,283 +13,343 @@ export type SynthPrint = {
 
 type Singularity = { x: number; y: number };
 
-function inOval(x: number, y: number, cx: number, cy: number, rx: number, ry: number, pad = 0) {
-  const nx = (x - cx) / (rx + pad);
-  const ny = (y - cy) / (ry + pad);
-  return nx * nx + ny * ny <= 1;
+const WIDTH = 980;
+const HEIGHT = 1260;
+
+function clamp(v: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, v));
 }
 
-function orientation(x: number, y: number, cores: Singularity[], deltas: Singularity[], spin: number) {
-  let sum = spin;
-  for (const c of cores) sum += Math.atan2(y - c.y, x - c.x);
-  for (const d of deltas) sum -= Math.atan2(y - d.y, x - d.x);
-  return 0.5 * sum;
+function blendAngle(from: number, to: number, t: number) {
+  const amount = clamp(t, 0, 1);
+  const delta = Math.atan2(Math.sin(to - from), Math.cos(to - from));
+  return from + delta * amount;
 }
 
-function tooNearSingularity(x: number, y: number, cores: Singularity[], deltas: Singularity[], r: number) {
-  for (const s of [...cores, ...deltas]) {
-    if (Math.hypot(x - s.x, y - s.y) < r) return true;
+function smoothstep(edge0: number, edge1: number, x: number) {
+  const t = clamp((x - edge0) / (edge1 - edge0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+class PointGrid {
+  private readonly cell: number;
+  private readonly buckets = new Map<string, Pt[]>();
+
+  constructor(cell: number) {
+    this.cell = cell;
   }
-  return false;
+
+  add(point: Pt) {
+    const key = this.key(point.x, point.y);
+    const bucket = this.buckets.get(key);
+    if (bucket) bucket.push(point);
+    else this.buckets.set(key, [point]);
+  }
+
+  nearest(x: number, y: number, ignoreTail = 0, own?: Pt[]) {
+    const gx = Math.floor(x / this.cell);
+    const gy = Math.floor(y / this.cell);
+    let best = Infinity;
+    for (let dy = -2; dy <= 2; dy++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const bucket = this.buckets.get(`${gx + dx},${gy + dy}`);
+        if (!bucket) continue;
+        for (const point of bucket) {
+          const d = Math.hypot(point.x - x, point.y - y);
+          if (d < best) best = d;
+        }
+      }
+    }
+    if (own && own.length > ignoreTail) {
+      const stop = own.length - ignoreTail;
+      const stride = 2;
+      for (let i = 0; i < stop; i += stride) {
+        const d = Math.hypot(own[i].x - x, own[i].y - y);
+        if (d < best) best = d;
+      }
+    }
+    return best;
+  }
+
+  private key(x: number, y: number) {
+    return `${Math.floor(x / this.cell)},${Math.floor(y / this.cell)}`;
+  }
 }
 
-export function synthesizePrint(kind: "loop" | "whorl" = "loop", seed = 1): SynthPrint {
-  const width = 860;
-  const height = 1100;
-  const period = 11.2;
-  const cx = width * 0.48;
+export function synthesizePrint(kind: "loop" | "whorl" = "loop", _seed = 1): SynthPrint {
+  const width = WIDTH;
+  const height = HEIGHT;
+  const period = kind === "loop" ? 15.5 : 15.2;
+  const cx = width * 0.5;
   const cy = height * 0.5;
-  const rx = width * 0.34;
-  const ry = height * 0.36;
+  const rx = width * 0.4;
+  const ry = height * 0.4;
 
   const cores: Singularity[] =
     kind === "loop"
-      ? [{ x: cx - 8, y: cy - 36 }]
+      ? [{ x: cx - rx * 0.02, y: cy - ry * 0.04 }]
       : [
-          { x: cx - 6, y: cy - 70 },
-          { x: cx + 4, y: cy + 10 },
+          { x: cx - period * 0.15, y: cy - period * 2.4 },
+          { x: cx + period * 0.15, y: cy + period * 2.1 },
         ];
   const deltas: Singularity[] =
     kind === "loop"
-      ? [{ x: cx + 150, y: cy + 150 }]
+      ? [{ x: cx + rx * 0.46, y: cy + ry * 0.28 }]
       : [
-          { x: cx - 170, y: cy + 170 },
-          { x: cx + 175, y: cy + 165 },
+          { x: cx - rx * 0.5, y: cy + ry * 0.36 },
+          { x: cx + rx * 0.5, y: cy + ry * 0.36 },
         ];
-  const spin = kind === "loop" ? Math.PI * 0.15 : 0;
 
-  const cell = period * 0.48;
-  const gw = Math.ceil(width / cell);
-  const gh = Math.ceil(height / cell);
-  const grid = new Int16Array(gw * gh);
-  grid.fill(-1);
-
-  const mark = (x: number, y: number, id: number) => {
-    const gx = Math.floor(x / cell);
-    const gy = Math.floor(y / cell);
-    if (gx < 0 || gy < 0 || gx >= gw || gy >= gh) return;
-    grid[gy * gw + gx] = id;
-  };
-  const occupied = (x: number, y: number, id: number) => {
-    const gx = Math.floor(x / cell);
-    const gy = Math.floor(y / cell);
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        const xx = gx + dx;
-        const yy = gy + dy;
-        if (xx < 0 || yy < 0 || xx >= gw || yy >= gh) continue;
-        const v = grid[yy * gw + xx];
-        if (v >= 0 && v !== id) return true;
-      }
+  const gridN = 4;
+  const gw = Math.ceil(width / gridN);
+  const gh = Math.ceil(height / gridN);
+  const sin2 = new Float32Array(gw * gh);
+  const cos2 = new Float32Array(gw * gh);
+  for (let gy = 0; gy < gh; gy++) {
+    for (let gx = 0; gx < gw; gx++) {
+      const x = (gx + 0.5) * gridN;
+      const y = (gy + 0.5) * gridN;
+      const theta = rawOrientation(x, y, cx, cy, rx, ry, cores, deltas);
+      const i = gy * gw + gx;
+      sin2[i] = Math.sin(2 * theta);
+      cos2[i] = Math.cos(2 * theta);
     }
-    return false;
+  }
+  const sinB = boxBlur(sin2, gw, gh, 2);
+  const cosB = boxBlur(cos2, gw, gh, 2);
+  const orientAt = (x: number, y: number) => {
+    const gx = clamp(x / gridN - 0.5, 0, gw - 1.001);
+    const gy = clamp(y / gridN - 0.5, 0, gh - 1.001);
+    const x0 = Math.floor(gx);
+    const y0 = Math.floor(gy);
+    const tx = gx - x0;
+    const ty = gy - y0;
+    const sample = (arr: Float32Array, ix: number, iy: number) => arr[iy * gw + ix];
+    const s =
+      sample(sinB, x0, y0) * (1 - tx) * (1 - ty) +
+      sample(sinB, Math.min(gw - 1, x0 + 1), y0) * tx * (1 - ty) +
+      sample(sinB, x0, Math.min(gh - 1, y0 + 1)) * (1 - tx) * ty +
+      sample(sinB, Math.min(gw - 1, x0 + 1), Math.min(gh - 1, y0 + 1)) * tx * ty;
+    const c =
+      sample(cosB, x0, y0) * (1 - tx) * (1 - ty) +
+      sample(cosB, Math.min(gw - 1, x0 + 1), y0) * tx * (1 - ty) +
+      sample(cosB, x0, Math.min(gh - 1, y0 + 1)) * (1 - tx) * ty +
+      sample(cosB, Math.min(gw - 1, x0 + 1), Math.min(gh - 1, y0 + 1)) * tx * ty;
+    return 0.5 * Math.atan2(s, c);
   };
 
-  const step = 1.15;
-  function integrate(x: number, y: number, sign: number, id: number) {
+  const inOval = (x: number, y: number, pad = 0) => {
+    const nx = (x - cx) / (rx + pad);
+    const ny = (y - cy) / (ry + pad);
+    return nx * nx + ny * ny <= 1;
+  };
+
+  const dsep = period;
+  const dtest = period * 0.72;
+  const step = 0.9;
+  const committed = new PointGrid(period * 0.45);
+  const raw: Pt[][] = [];
+
+  function trace(sx: number, sy: number, sign: number) {
     const pts: Pt[] = [];
-    let px = x;
-    let py = y;
-    let pdx = Math.cos(orientation(x, y, cores, deltas, spin)) * sign;
-    let pdy = Math.sin(orientation(x, y, cores, deltas, spin)) * sign;
-    for (let i = 0; i < 1800; i++) {
-      if (!inOval(px, py, cx, cy, rx, ry, -period * 0.2)) break;
-      if (tooNearSingularity(px, py, cores, deltas, period * 0.55)) break;
-      if (i > 8 && occupied(px, py, id)) break;
-      pts.push({ x: px, y: py });
-      mark(px, py, id);
-      let theta = orientation(px, py, cores, deltas, spin);
+    const own = new PointGrid(period * 0.45);
+    const lag: Pt[] = [];
+    let px = sx;
+    let py = sy;
+    let theta0 = orientAt(px, py);
+    let vx = Math.cos(theta0) * sign;
+    let vy = Math.sin(theta0) * sign;
+    let closed = false;
+    for (let i = 0; i < 4200; i++) {
+      if (!inOval(px, py, -period * 0.15)) break;
+      const nearOwn = pts.length > Math.round(period * 5) ? own.nearest(px, py) : Infinity;
+      const nearOther = i > 6 ? committed.nearest(px, py) : Infinity;
+      if (nearOther < dtest) break;
+      if (nearOwn < dtest * 0.8) {
+        closed = true;
+        break;
+      }
+      const point = { x: px, y: py };
+      pts.push(point);
+      lag.push(point);
+      if (lag.length > 18) own.add(lag.shift()!);
+      const theta = orientAt(px, py);
       let dx = Math.cos(theta);
       let dy = Math.sin(theta);
-      if (dx * pdx + dy * pdy < 0) {
+      if (dx * vx + dy * vy < 0) {
         dx = -dx;
         dy = -dy;
       }
-      pdx = dx;
-      pdy = dy;
-      px += dx * step;
-      py += dy * step;
+      vx = vx * 0.35 + dx * 0.65;
+      vy = vy * 0.35 + dy * 0.65;
+      const len = Math.hypot(vx, vy) || 1;
+      vx /= len;
+      vy /= len;
+      px += vx * step;
+      py += vy * step;
     }
-    return pts;
+    return { pts, closed };
   }
 
-  const queue: Pt[] = [{ x: cx - period * 2, y: cy + period }];
-  const raw: Pt[][] = [];
-  let id = 0;
-  while (queue.length && raw.length < 140) {
-    const seedPt = queue.shift()!;
-    if (!inOval(seedPt.x, seedPt.y, cx, cy, rx, ry, -period)) continue;
-    if (occupied(seedPt.x, seedPt.y, 9999)) continue;
-    const my = id++;
-    const forward = integrate(seedPt.x, seedPt.y, 1, my);
-    const back = integrate(seedPt.x, seedPt.y, -1, my);
-    const points = [...back.reverse(), ...forward];
-    if (points.length < 36) continue;
-    raw.push(points);
-    for (let i = 8; i < points.length; i += 14) {
-      const a = points[Math.max(0, i - 2)];
-      const b = points[Math.min(points.length - 1, i + 2)];
+  const queue: Pt[] = [{ x: cx - period * 0.4, y: cy + period * 1.6 }];
+  const seeded = new PointGrid(period * 0.5);
+  let spins = 0;
+  while (queue.length && raw.length < 150 && spins < 4000) {
+    spins++;
+    const seed = queue.shift()!;
+    if (!inOval(seed.x, seed.y, -period * 0.8)) continue;
+    if (committed.nearest(seed.x, seed.y) < dsep * 0.86) continue;
+    if (seeded.nearest(seed.x, seed.y) < period * 0.35) continue;
+    seeded.add(seed);
+    const forward = trace(seed.x, seed.y, 1);
+    const back = trace(seed.x, seed.y, -1);
+    const points = [...back.pts.reverse(), ...forward.pts.slice(1)];
+    if (points.length < 28 || pathLength(points) < period * 3.2) continue;
+    let smooth = smoothPath(points, 3);
+    smooth = smoothPath(smooth, 2);
+    smooth = resamplePath(smooth, 2.6);
+    const ridge = ridgeFromPoints(smooth, forward.closed && back.pts.length + forward.pts.length > 40);
+    if (!ridge) continue;
+    raw.push(ridge.points);
+    for (const point of ridge.points) committed.add(point);
+    for (let i = 6; i < ridge.points.length; i += 8) {
+      const a = ridge.points[Math.max(0, i - 2)];
+      const b = ridge.points[Math.min(ridge.points.length - 1, i + 2)];
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const len = Math.hypot(dx, dy) || 1;
       const nx = -dy / len;
       const ny = dx / len;
-      queue.push({ x: points[i].x + nx * period, y: points[i].y + ny * period });
-      queue.push({ x: points[i].x - nx * period, y: points[i].y - ny * period });
+      queue.push({ x: ridge.points[i].x + nx * dsep, y: ridge.points[i].y + ny * dsep });
+      queue.push({ x: ridge.points[i].x - nx * dsep, y: ridge.points[i].y - ny * dsep });
     }
   }
 
-  // Ridge endings: trim a portion of some ridges so minutiae survive extraction.
-  let rng = seed * 9301 + 49297;
-  const rand = () => {
-    rng = (rng * 1664525 + 1013904223) >>> 0;
-    return rng / 4294967296;
-  };
-  const trimmed: Pt[][] = [];
-  for (const points of raw) {
-    if (points.length > 80 && rand() < 0.22) {
-      const cut = Math.floor(points.length * (0.15 + rand() * 0.3));
-      const side = rand() < 0.5 ? points.slice(0, points.length - cut) : points.slice(cut);
-      if (side.length > 40) trimmed.push(side);
-      else trimmed.push(points);
-    } else {
-      trimmed.push(points);
+  // Second pass: any empty patch inside the oval gets its own ridge.
+  for (let y = cy - ry; y <= cy + ry && raw.length < 170; y += period * 0.85) {
+    for (let x = cx - rx; x <= cx + rx && raw.length < 170; x += period * 0.85) {
+      if (!inOval(x, y, -period)) continue;
+      if (committed.nearest(x, y) < dsep * 0.92) continue;
+      const forward = trace(x, y, 1);
+      const back = trace(x, y, -1);
+      const points = [...back.pts.reverse(), ...forward.pts.slice(1)];
+      if (pathLength(points) < period * 4) continue;
+      let smooth = smoothPath(points, 3);
+      smooth = resamplePath(smooth, 2.6);
+      const ridge = ridgeFromPoints(smooth, false);
+      if (!ridge) continue;
+      raw.push(ridge.points);
+      for (const point of ridge.points) committed.add(point);
     }
-  }
-
-  // A handful of bifurcations: branch from a ridge toward empty space for a short run,
-  // then let it join the field. Drawn as an extra short ridge that shares an endpoint.
-  for (let n = 0; n < 10; n++) {
-    const host = trimmed[Math.floor(rand() * trimmed.length)];
-    if (!host || host.length < 50) continue;
-    const at = Math.floor(host.length * (0.3 + rand() * 0.4));
-    const origin = host[at];
-    const a = host[Math.max(0, at - 2)];
-    const b = host[Math.min(host.length - 1, at + 2)];
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const len = Math.hypot(dx, dy) || 1;
-    const nx = -dy / len;
-    const ny = dx / len;
-    const sign = rand() < 0.5 ? 1 : -1;
-    const branch: Pt[] = [{ ...origin }];
-    let px = origin.x + nx * sign * 1.2;
-    let py = origin.y + ny * sign * 1.2;
-    let pdx = nx * sign;
-    let pdy = ny * sign;
-    for (let i = 0; i < 70; i++) {
-      if (!inOval(px, py, cx, cy, rx, ry, -period)) break;
-      branch.push({ x: px, y: py });
-      let theta = orientation(px, py, cores, deltas, spin);
-      let vx = Math.cos(theta);
-      let vy = Math.sin(theta);
-      if (vx * pdx + vy * pdy < 0) {
-        vx = -vx;
-        vy = -vy;
-      }
-      // Bias the first steps away from the parent so the split reads as a bifurcation.
-      const blend = i < 10 ? 0.45 : 0;
-      vx = vx * (1 - blend) + nx * sign * blend;
-      vy = vy * (1 - blend) + ny * sign * blend;
-      const vl = Math.hypot(vx, vy) || 1;
-      pdx = vx / vl;
-      pdy = vy / vl;
-      px += pdx * step;
-      py += pdy * step;
-    }
-    if (branch.length > 24) trimmed.push(branch);
   }
 
   const ridges: Ridge[] = [];
-  for (const points of trimmed) {
+  for (const points of raw) {
     const ridge = ridgeFromPoints(points, false);
     if (ridge && ridge.length > period * 3) ridges.push(ridge);
   }
+  ridges.sort((a, b) => b.length - a.length);
 
   const gray = new Float32Array(width * height);
-  gray.fill(236);
-  const ridgeRadius = period * 0.4;
+  gray.fill(244);
+  const radius = ridgeWidth(period) / 2;
   for (const ridge of ridges) {
     const pts = ridge.points;
     for (let i = 1; i < pts.length; i++) {
       const a = pts[i - 1];
       const b = pts[i];
       const dist = Math.hypot(b.x - a.x, b.y - a.y);
-      const steps = Math.max(1, Math.ceil(dist / 0.7));
+      const steps = Math.max(1, Math.ceil(dist / 0.65));
       for (let s = 0; s <= steps; s++) {
         const t = s / steps;
-        const x = a.x + (b.x - a.x) * t;
-        const y = a.y + (b.y - a.y) * t;
-        const wobble = 0.82 + 0.18 * Math.sin(x * 0.05 + y * 0.03 + seed);
-        const rad = ridgeRadius * wobble;
-        const r = Math.ceil(rad);
-        const x0 = Math.max(0, Math.floor(x - r));
-        const x1 = Math.min(width - 1, Math.ceil(x + r));
-        const y0 = Math.max(0, Math.floor(y - r));
-        const y1 = Math.min(height - 1, Math.ceil(y + r));
-        for (let yy = y0; yy <= y1; yy++) {
-          for (let xx = x0; xx <= x1; xx++) {
-            const d = Math.hypot(xx - x, yy - y);
-            if (d > rad) continue;
-            const edge = d / rad;
-            const ink = edge < 0.72 ? 0 : (edge - 0.72) / 0.28;
-            const idx = yy * width + xx;
-            if (ink < gray[idx] / 255) gray[idx] = ink * 255;
-          }
-        }
+        stamp(gray, width, height, a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, radius);
       }
-    }
-  }
-
-  // Soften, then fade the oval edge and add a little paper grain.
-  const blurred = new Float32Array(gray.length);
-  const rad = 1;
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      let acc = 0;
-      let wsum = 0;
-      for (let dy = -rad; dy <= rad; dy++) {
-        for (let dx = -rad; dx <= rad; dx++) {
-          const xx = x + dx;
-          const yy = y + dy;
-          if (xx < 0 || yy < 0 || xx >= width || yy >= height) continue;
-          const wgt = dx === 0 && dy === 0 ? 4 : 1;
-          acc += gray[yy * width + xx] * wgt;
-          wsum += wgt;
-        }
-      }
-      blurred[y * width + x] = acc / wsum;
     }
   }
 
   const rgba = new Uint8Array(width * height * 4);
-  let noise = seed * 101;
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const nx = (x - cx) / rx;
-      const ny = (y - cy) / ry;
-      const oval = nx * nx + ny * ny;
-      const fade = oval < 0.86 ? 1 : oval > 1.05 ? 0 : 1 - (oval - 0.86) / 0.19;
-      noise = (noise * 1664525 + 1013904223) >>> 0;
-      const grain = (noise / 4294967296 - 0.5) * 10;
-      const paper = 240 + grain * 0.3;
-      const ink = blurred[y * width + x];
-      const v = paper * (1 - fade) + ink * fade + grain * fade * 0.15;
-      const g = Math.max(0, Math.min(255, v));
-      const idx = (y * width + x) * 4;
-      // Warm the paper slightly toward ivory, keep ridges neutral-dark.
-      const warmth = (g / 255) * 8;
-      rgba[idx] = Math.min(255, g + warmth);
-      rgba[idx + 1] = g;
-      rgba[idx + 2] = Math.max(0, g - warmth * 0.4);
-      rgba[idx + 3] = 255;
-      blurred[y * width + x] = 0.2126 * rgba[idx] + 0.7152 * rgba[idx + 1] + 0.0722 * rgba[idx + 2];
-    }
+  for (let i = 0; i < gray.length; i++) {
+    const g = gray[i];
+    const p = i * 4;
+    const ink = 1 - g / 244;
+    rgba[p] = Math.round(246 * (1 - ink) + 52 * ink);
+    rgba[p + 1] = Math.round(241 * (1 - ink) + 56 * ink);
+    rgba[p + 2] = Math.round(232 * (1 - ink) + 58 * ink);
+    rgba[p + 3] = 255;
+    gray[i] = 0.2126 * rgba[p] + 0.7152 * rgba[p + 1] + 0.0722 * rgba[p + 2];
   }
 
-  return { width, height, rgba, gray: blurred, ridges, period };
+  return { width, height, rgba, gray, ridges, period };
+}
+
+function rawOrientation(
+  x: number,
+  y: number,
+  cx: number,
+  cy: number,
+  rx: number,
+  ry: number,
+  cores: Singularity[],
+  deltas: Singularity[],
+) {
+  let singular = 0;
+  for (const core of cores) singular += Math.atan2(y - core.y, x - core.x);
+  for (const delta of deltas) singular -= Math.atan2(y - delta.y, x - delta.x);
+  singular *= 0.5;
+  const nx = (x - cx) / rx;
+  const ny = (y - cy) / ry;
+  const phi = Math.atan2(ny, nx);
+  const tangent = Math.atan2(Math.cos(phi) * ry, -Math.sin(phi) * rx);
+  const radial = Math.hypot(nx, ny);
+  const edge = smoothstep(0.42, 0.9, radial);
+  return blendAngle(singular, tangent, edge);
+}
+
+function boxBlur(src: Float32Array, w: number, h: number, r: number) {
+  const dst = new Float32Array(src.length);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let acc = 0;
+      let n = 0;
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          const xx = x + dx;
+          const yy = y + dy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          acc += src[yy * w + xx];
+          n++;
+        }
+      }
+      dst[y * w + x] = acc / n;
+    }
+  }
+  return dst;
+}
+
+function stamp(gray: Float32Array, width: number, height: number, x: number, y: number, radius: number) {
+  const r = Math.ceil(radius);
+  const x0 = Math.max(0, Math.floor(x - r));
+  const x1 = Math.min(width - 1, Math.ceil(x + r));
+  const y0 = Math.max(0, Math.floor(y - r));
+  const y1 = Math.min(height - 1, Math.ceil(y + r));
+  for (let yy = y0; yy <= y1; yy++) {
+    for (let xx = x0; xx <= x1; xx++) {
+      const d = Math.hypot(xx - x, yy - y);
+      if (d >= radius) continue;
+      const edge = d / radius;
+      const ink = edge < 0.78 ? 28 : 28 + ((edge - 0.78) / 0.22) * 210;
+      const idx = yy * width + xx;
+      if (ink < gray[idx]) gray[idx] = ink;
+    }
+  }
+}
+
+export function printInkSvg(print: SynthPrint) {
+  const stroke = ridgeWidth(print.period).toFixed(2);
+  const paths = print.ridges.map((ridge) => `<path d="${toPathD(ridge.points)}"/>`).join("");
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${print.width}" height="${print.height}" viewBox="0 0 ${print.width} ${print.height}"><rect width="100%" height="100%" fill="#F6F1E8"/><g fill="none" stroke="#34383A" stroke-width="${stroke}" stroke-linecap="round" stroke-linejoin="round">${paths}</g></svg>`;
 }
 
 export function truthLength(ridges: Ridge[]) {
-  return ridges.reduce((s, r) => s + (r.length || pathLength(r.points)), 0);
+  return ridges.reduce((sum, ridge) => sum + (ridge.length || pathLength(ridge.points)), 0);
 }

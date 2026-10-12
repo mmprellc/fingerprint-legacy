@@ -1,4 +1,4 @@
-import { finishRidge } from "./geometry";
+import { finishRidge, joinRidges } from "./geometry";
 import type { ExtractDebug, ExtractOptions, ExtractResult, Pt, Ridge } from "./types";
 
 const TARGET_PERIOD = 12;
@@ -905,12 +905,12 @@ export function extractFromGray(grayIn: Float32Array, widthIn: number, heightIn:
   binary = dropSpecks(binary, w, h, Math.round(prep.period * 1.4));
   let skeleton = zhangSuen(binary, w, h);
   skeleton = pruneSpurs(skeleton, w, h, Math.round(prep.period * 0.55));
-  skeleton = linkGaps(skeleton, prep.orient, w, h, prep.period * 0.62);
+  skeleton = linkGaps(skeleton, prep.orient, w, h, prep.period * 1.2);
   skeleton = pruneSpurs(skeleton, w, h, Math.round(prep.period * 0.4));
   skeleton = dropSpecks(skeleton, w, h, Math.round(prep.period * 1.6));
 
-  const minLength = prep.period * 2.2;
-  const ridges = traceSkeleton(skeleton, w, h, minLength);
+  const traced = traceSkeleton(skeleton, w, h, Math.max(8, prep.period * 1.15));
+  const ridges = joinRidges(traced, prep.period);
   if (ridges.length < 8) {
     warnings.push("Few ridge lines were found. Try a closer, sharper photo with the print filling the frame.");
   }
