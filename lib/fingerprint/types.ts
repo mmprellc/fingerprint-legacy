@@ -23,6 +23,8 @@ export type ExtractDebug = {
   enhanced: Float32Array;
   binary: Uint8Array;
   skeleton: Uint8Array;
+  orient?: Float32Array;
+  coherence?: Float32Array;
 };
 
 export type ExtractResult = {

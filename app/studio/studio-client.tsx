@@ -69,7 +69,8 @@ export function StudioClient({
     if (started.current) return;
     started.current = true;
     if (initialPiece) {
-      void loadNamed(initialPiece.sample, [], 0);
+      if (initialPiece.printUrl && initialPiece.imageUrl) void loadAddress(initialPiece.printUrl, initialPiece.imageUrl, "Randy's print", 0);
+      else void loadNamed(initialPiece.sample, [], 0);
       return;
     }
     if (couple) {
@@ -106,6 +107,37 @@ export function StudioClient({
     }
     return built.svg;
   }, [prints, style, period, view, preset.ink]);
+
+  async function loadAddress(jsonUrl: string, imageUrl: string, label: string, slot: number) {
+    setBusy(true);
+    setError("");
+    try {
+      const data = (await fetch(jsonUrl).then((response) => response.json())) as SampleFile;
+      const draft: Draft = {
+        key: `${jsonUrl}-${slot}-${Date.now()}`,
+        label,
+        src: imageUrl,
+        width: data.width,
+        height: data.height,
+        period: data.period,
+        ridges: data.ridges,
+        lines: [],
+        tx: 0,
+        ty: 0,
+        rotation: 0,
+        scale: 1,
+      };
+      setPrints((current) => {
+        const next = current.slice(0, 2);
+        next[slot] = draft;
+        return next.filter(Boolean);
+      });
+    } catch {
+      setError("The print could not be loaded.");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function loadNamed(name: string, lines: string[], slot: number) {
     setBusy(true);

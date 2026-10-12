@@ -356,14 +356,19 @@ function estimatePeriod(
       const ny = Math.cos(theta);
       const vals: number[] = [];
       for (let k = -22; k <= 22; k++) vals.push(sample(src, w, h, x + nx * k, y + ny * k));
+      let mean = 0;
+      for (const v of vals) mean += v;
+      mean /= vals.length;
+      const scores = new Float32Array(28);
       let bestLag = 10;
       let best = -Infinity;
-      for (let lag = 6; lag <= 18; lag++) {
+      for (let lag = 5; lag <= 24; lag++) {
         let c = 0;
         const n = vals.length - lag;
-        for (let k = 0; k < n; k++) c += vals[k] * vals[k + lag];
-        if (c > best) {
-          best = c;
+        for (let k = 0; k < n; k++) c += (vals[k] - mean) * (vals[k + lag] - mean);
+        scores[lag] = c / Math.max(1, n);
+        if (scores[lag] > best) {
+          best = scores[lag];
           bestLag = lag;
         }
       }
@@ -384,11 +389,11 @@ function gabor(
   period: number,
 ) {
   const nOri = 16;
-  const radius = 7;
+  const radius = 11;
   const size = radius * 2 + 1;
   const freq = 1 / period;
-  const sigmaAlong = 4.2;
-  const sigmaAcross = 3.4;
+  const sigmaAlong = 6.4;
+  const sigmaAcross = 3.2;
   const kernels: Float32Array[] = [];
   for (let bin = 0; bin < nOri; bin++) {
     const ridge = (bin * Math.PI) / nOri;
@@ -810,10 +815,219 @@ function traceSkeleton(bin: Uint8Array, w: number, h: number, minLength: number)
   return ridges;
 }
 
+function median3(src: Float32Array, w: number, h: number) {
+  const dst = new Float32Array(w * h);
+  const win = new Float32Array(9);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (x === 0 || y === 0 || x === w - 1 || y === h - 1) {
+        dst[y * w + x] = src[y * w + x];
+        continue;
+      }
+      let n = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) win[n++] = src[(y + dy) * w + (x + dx)];
+      }
+      for (let i = 1; i < 9; i++) {
+        const v = win[i];
+        let j = i;
+        while (j > 0 && win[j - 1] > v) {
+          win[j] = win[j - 1];
+          j--;
+        }
+        win[j] = v;
+      }
+      dst[y * w + x] = win[4];
+    }
+  }
+  return dst;
+}
+
+/** Walk the enhanced ridge centers so a noisy photo becomes long lines instead of a broken skeleton. */
+function followRidges(
+  enhanced: Float32Array,
+  orient: Float32Array,
+  mask: Uint8Array,
+  coherence: Float32Array,
+  w: number,
+  h: number,
+  period: number,
+) {
+  let sum = 0;
+  let sum2 = 0;
+  let n = 0;
+  for (let i = 0; i < enhanced.length; i++) {
+    if (!mask[i]) continue;
+    sum += enhanced[i];
+    sum2 += enhanced[i] * enhanced[i];
+    n++;
+  }
+  const mean = sum / Math.max(1, n);
+  const std = Math.sqrt(Math.max(0, sum2 / Math.max(1, n) - mean * mean));
+  const high = mean + 0.2 * std;
+  const low = mean - 0.08 * std;
+  const visited = new Uint8Array(w * h);
+  const stride = Math.max(4, Math.round(period * 0.8));
+  const minLength = Math.max(18, period * 2.6);
+  const maxWeak = Math.max(6, Math.round(period * 1.7));
+  const claim = Math.max(2.2, period * 0.34);
+  const paths: Pt[][] = [];
+  const stops = { border: 0, visited: 0, weak: 0, limit: 0, mask: 0, value: 0, coherence: 0 };
+
+  const at = (x: number, y: number) => {
+    const xi = Math.round(x);
+    const yi = Math.round(y);
+    if (xi < 1 || yi < 1 || xi >= w - 1 || yi >= h - 1) return null;
+    return { i: yi * w + xi, x: xi, y: yi };
+  };
+
+  function localMax(x: number, y: number) {
+    const cell = at(x, y);
+    if (!cell || !mask[cell.i] || enhanced[cell.i] < high || visited[cell.i]) return false;
+    const theta = orient[cell.i];
+    const nx = -Math.sin(theta);
+    const ny = Math.cos(theta);
+    const center = enhanced[cell.i];
+    const left = sample(enhanced, w, h, x + nx * 1.4, y + ny * 1.4);
+    const right = sample(enhanced, w, h, x - nx * 1.4, y - ny * 1.4);
+    return center >= left && center >= right;
+  }
+
+  function claimPath(points: Pt[]) {
+    const r = Math.ceil(claim);
+    for (const point of points) {
+      const x0 = Math.round(point.x);
+      const y0 = Math.round(point.y);
+      for (let dy = -r; dy <= r; dy++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (dx * dx + dy * dy > claim * claim) continue;
+          const xx = x0 + dx;
+          const yy = y0 + dy;
+          if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+          visited[yy * w + xx] = 1;
+        }
+      }
+    }
+  }
+
+  function walk(x0: number, y0: number, sign: number) {
+    const origin = at(x0, y0);
+    if (!origin) return [] as Pt[];
+    let theta = orient[origin.i];
+    let dirx = Math.cos(theta) * sign;
+    let diry = Math.sin(theta) * sign;
+    let x = x0;
+    let y = y0;
+    const points: Pt[] = [{ x, y }];
+    let weak = 0;
+    let lastStrong = 1;
+    const limit = Math.round((w + h) * 1.4);
+    for (let step = 0; step < limit; step++) {
+      const here = at(x, y);
+      if (!here) break;
+      theta = orient[here.i];
+      let fx = Math.cos(theta);
+      let fy = Math.sin(theta);
+      if (fx * dirx + fy * diry < 0) {
+        fx = -fx;
+        fy = -fy;
+      }
+      dirx = dirx * 0.42 + fx * 0.58;
+      diry = diry * 0.42 + fy * 0.58;
+      const dl = Math.hypot(dirx, diry) || 1;
+      dirx /= dl;
+      diry /= dl;
+      let px = x + dirx * 0.92;
+      let py = y + diry * 0.92;
+      const nx = -diry;
+      const ny = dirx;
+      const centerV = sample(enhanced, w, h, px, py);
+      let bestV = centerV;
+      let bestOff = 0;
+      const reach = period * 0.4;
+      if (centerV >= low) {
+        for (let off = -reach; off <= reach; off += 0.55) {
+          const v = sample(enhanced, w, h, px + nx * off, py + ny * off);
+          if (v > bestV + 0.015) {
+            bestV = v;
+            bestOff = off;
+          }
+        }
+      }
+      px += nx * bestOff;
+      py += ny * bestOff;
+      const next = at(px, py);
+      if (!next) {
+        if (process.env.RIDGE_DEBUG) stops.border++;
+        break;
+      }
+      if (step > 8 && visited[next.i]) {
+        if (process.env.RIDGE_DEBUG) stops.visited++;
+        break;
+      }
+      const onMask = mask[next.i] === 1;
+      const strong = onMask && bestV >= low && coherence[next.i] > 0.08;
+      if (!strong) {
+        weak++;
+        if (weak > maxWeak) {
+          if (process.env.RIDGE_DEBUG) {
+            stops.weak++;
+            if (!onMask) stops.mask++;
+            else if (bestV < low) stops.value++;
+            else stops.coherence++;
+          }
+          break;
+        }
+      } else {
+        weak = 0;
+        lastStrong = points.length + 1;
+      }
+      points.push({ x: px, y: py });
+      x = px;
+      y = py;
+    }
+    if (process.env.RIDGE_DEBUG) stops.limit++;
+    return points.slice(0, lastStrong);
+  }
+
+  for (let y = stride; y < h - stride; y += stride) {
+    for (let x = stride; x < w - stride; x += stride) {
+      if (!localMax(x, y)) continue;
+      const back = walk(x, y, -1);
+      const fore = walk(x, y, 1);
+      const points = back.reverse().concat(fore.slice(1));
+      let length = 0;
+      for (let i = 1; i < points.length; i++) {
+        length += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+      }
+      if (length < minLength || points.length < 6) continue;
+      claimPath(points);
+      paths.push(points);
+    }
+  }
+
+  if (process.env.RIDGE_DEBUG) console.log("ridge stops", stops, "paths", paths.length);
+  const ridges: Ridge[] = [];
+  for (const points of paths) {
+    const closed = Math.hypot(points[0].x - points[points.length - 1].x, points[0].y - points[points.length - 1].y) < period * 0.7
+      && pathLengthOf(points) > period * 8;
+    const ridge = finishRidge(points, closed, minLength);
+    if (ridge) ridges.push(ridge);
+  }
+  return ridges;
+}
+
+function pathLengthOf(points: Pt[]) {
+  let length = 0;
+  for (let i = 1; i < points.length; i++) length += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+  return length;
+}
+
 function prepare(gray: Float32Array, w: number, h: number, ridgesAreDark: boolean) {
   const bright = new Float32Array(w * h);
   for (let i = 0; i < gray.length; i++) bright[i] = ridgesAreDark ? 255 - gray[i] : gray[i];
-  const soft = blurSeparable(bright, w, h, 1);
+  const denoised = median3(bright, w, h);
+  const soft = blurSeparable(denoised, w, h, 1);
   let mask = varianceMask(soft, w, h);
   const { orient, coherence } = orientationField(soft, mask, w, h);
   for (let i = 0; i < mask.length; i++) {
@@ -909,14 +1123,14 @@ export function extractFromGray(grayIn: Float32Array, widthIn: number, heightIn:
   skeleton = pruneSpurs(skeleton, w, h, Math.round(prep.period * 0.4));
   skeleton = dropSpecks(skeleton, w, h, Math.round(prep.period * 1.6));
 
-  const traced = traceSkeleton(skeleton, w, h, Math.max(8, prep.period * 1.15));
-  const ridges = joinRidges(traced, prep.period);
+  const traced = followRidges(enhanced, prep.orient, prep.mask, prep.coherence, w, h, prep.period);
+  const ridges = joinRidges(traced.length > 4 ? traced : traceSkeleton(skeleton, w, h, Math.max(8, prep.period * 1.15)), prep.period);
   if (ridges.length < 8) {
     warnings.push("Few ridge lines were found. Try a closer, sharper photo with the print filling the frame.");
   }
 
   const debug: ExtractDebug | undefined = options.debug
-    ? { normalized: prep.norm, enhanced, binary, skeleton }
+    ? { normalized: prep.norm, enhanced, binary, skeleton, orient: prep.orient, coherence: prep.coherence }
     : undefined;
 
   return {

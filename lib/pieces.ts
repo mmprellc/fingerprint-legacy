@@ -58,11 +58,21 @@ export const randyCzyzStyle: PrintStyle = {
 export type StudioPiece = {
   slug: string;
   sample: "loop" | "whorl";
+  /** Extracted ridges, when the piece is not one of the built-in samples. */
+  printUrl?: string;
+  /** Photo in the same pixel grid as printUrl, for the side-by-side view. */
+  imageUrl?: string;
   style: PrintStyle;
 };
 
 export const studioPieces: StudioPiece[] = [
-  { slug: "randy-czyz", sample: "loop", style: randyCzyzStyle },
+  {
+    slug: "randy-czyz",
+    sample: "loop",
+    printUrl: "/pieces/randy-print.json",
+    imageUrl: "/pieces/randy-print.png",
+    style: randyCzyzStyle,
+  },
 ];
 
 export function pieceBySlug(slug: string) {

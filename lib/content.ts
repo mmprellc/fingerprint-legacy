@@ -139,7 +139,7 @@ export const galleryPieces: GalleryPiece[] = [
     title: "Randy Czyz",
     image: "/pieces/randy-czyz.png",
     occasion: "memorials",
-    caption: "A family and four verses, set into a loop. Two dedications sit in the core.",
+    caption: "Randy Czyz's own ink print, carrying the family and four verses. Two dedications sit in the core.",
     couple: false,
     studio: "/studio?piece=randy-czyz",
     pdf: "/pieces/randy-czyz.pdf",
