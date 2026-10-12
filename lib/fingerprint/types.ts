@@ -6,6 +6,17 @@ export type Ridge = {
   length: number;
 };
 
+/** Locked knobs for one extraction attempt. Defaults are the Randy print. */
+export type ExtractProfile = {
+  /** Ink is this far from the paper tone. */
+  inkDelta?: number;
+  /** A ridge this close to a neighbor, as a fraction of the period, is dropped. */
+  spacingLimit?: number;
+  spacingHard?: number;
+  /** Ridge spacing as a multiple of the measured period. */
+  sepFactor?: number;
+};
+
 export type ExtractOptions = {
   /** dark: ridges are darker than the paper. light: the reverse. auto: detect. */
   ridges?: "auto" | "dark" | "light";
@@ -16,6 +27,9 @@ export type ExtractOptions = {
   /** When false, skip scale normalization (used by the ground-truth test). */
   rescale?: boolean;
   debug?: boolean;
+  profile?: ExtractProfile;
+  /** Keep the silhouette mask for the quality gate. It is not sent to the browser. */
+  keepMask?: boolean;
 };
 
 export type ExtractDebug = {
@@ -34,6 +48,8 @@ export type ExtractResult = {
   ridges: Ridge[];
   warnings: string[];
   ridgesAreDark: boolean;
+  /** Present only when keepMask was set. */
+  mask?: Uint8Array;
   debug?: ExtractDebug;
 };
 

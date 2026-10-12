@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
-import { extractFromGray, rgbaToGray } from "../lib/fingerprint/engine";
+import { rgbaToGray } from "../lib/fingerprint/engine";
+import { producePortrait } from "../lib/fingerprint/pipeline";
 import { printCore } from "../lib/fingerprint/lettering";
 import { buildPreviewSvg, mapPrint } from "../lib/fingerprint/preview";
 import { renderArtwork } from "../lib/fingerprint/render-print";
@@ -24,7 +25,11 @@ async function studioExtract(input: Buffer) {
   const pipeline = scale === 1 ? prepared : prepared.resize(Math.round((meta.width || 1) * scale), Math.round((meta.height || 1) * scale), { fit: "fill" });
   const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   const gray = rgbaToGray(data, info.width, info.height);
-  const result = extractFromGray(gray, info.width, info.height, { ridges: "auto" });
+  const result = producePortrait(gray, info.width, info.height, randyCzyzStyle, { ridges: "auto" });
+  if (!result.accepted || result.attempts[0]?.profile !== "locked" || !result.attempts[0]?.passed) {
+    const failed = result.attempts.flatMap((attempt) => attempt.checks.filter((check) => !check.passed).map((check) => `${attempt.profile}:${check.id}`));
+    throw new Error(result.retake?.title || `Randy did not pass on the locked profile (${failed.join(", ")})`);
+  }
   const photo = await sharp(input).rotate().resize(result.width, result.height, { fit: "fill" }).png().toBuffer();
   return { result, photo };
 }

@@ -9,7 +9,8 @@
     "start": "next start",
     "prove": "tsx scripts/prove.ts",
     "generate-samples": "tsx scripts/generate-samples.ts",
-    "render-randy": "tsx scripts/render-randy.ts"
+    "render-randy": "tsx scripts/render-randy.ts",
+    "regression": "tsx scripts/regression-portraits.ts"
   },
   "dependencies": {
     "jszip": "^3.10.1",

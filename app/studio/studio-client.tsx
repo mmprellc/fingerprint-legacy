@@ -57,6 +57,7 @@ export function StudioClient({
   const [tone, setTone] = useState<"auto" | "dark" | "light">("auto");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [retake, setRetake] = useState<{ title: string; detail: string; steps: string[] } | null>(null);
   const [seedLines, setSeedLines] = useState(initialOccasion?.lines ?? ["A name", "A date", "A place they loved"]);
   const [occasionSlug, setOccasionSlug] = useState(initialOccasion?.slug ?? "");
   const [linesOpen, setLinesOpen] = useState(() => !hasList(initialPiece?.style.names) && !hasList(initialPiece?.style.scriptures) && !hasList(initialOccasion?.lines));
@@ -127,6 +128,7 @@ export function StudioClient({
         rotation: 0,
         scale: 1,
       };
+      setRetake(null);
       setPrints((current) => {
         const next = current.slice(0, 2);
         next[slot] = draft;
@@ -158,6 +160,7 @@ export function StudioClient({
         rotation: slot ? -8 : 0,
         scale: slot ? 0.94 : 1,
       };
+      setRetake(null);
       setPrints((current) => {
         const next = current.slice(0, 2);
         next[slot] = draft;
@@ -180,6 +183,7 @@ export function StudioClient({
       ]);
       const firstLines = occasion?.lines ?? ["Elena Voss", "June 14", "the orchard", "I choose you"];
       const secondLines = ["Jonah Ellis", "June 14", "the orchard", "I choose you", "the song we danced"];
+      setRetake(null);
       setPrints([
         draftFrom("loop", "First print", loop, firstLines, 0),
         draftFrom("whorl", "Second print", whorl, secondLines, 1),
@@ -200,9 +204,19 @@ export function StudioClient({
       const body = new FormData();
       body.set("file", file);
       body.set("ridges", tone);
+      body.set("style", JSON.stringify(style));
       const response = await fetch("/api/studio/extract", { method: "POST", body });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "The print could not be read.");
+      if (!payload.accepted) {
+        setRetake(payload.retake ?? { title: "Retake the photo.", detail: "We could not read a fingerprint from that photo.", steps: [] });
+        setPrints((current) => current.filter((_, index) => index !== slot));
+        return;
+      }
+      setRetake(null);
+      if (typeof payload.textScale === "number" && Math.abs(payload.textScale - style.textScale) > 0.02) {
+        setStyle((current) => ({ ...current, textScale: payload.textScale }));
+      }
       const src = URL.createObjectURL(file);
       const draft: Draft = {
         key: `upload-${slot}-${Date.now()}`,
@@ -223,7 +237,6 @@ export function StudioClient({
         next[slot] = draft;
         return next.filter(Boolean);
       });
-      if (payload.warnings?.length) setError(payload.warnings[0]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The print could not be read.");
     } finally {
@@ -347,6 +360,19 @@ export function StudioClient({
       </section>
 
       <aside className="controls">
+        {retake ? (
+          <div className="alert retake" role="alert">
+            <strong>{retake.title}</strong>
+            <p>{retake.detail}</p>
+            {retake.steps?.length ? (
+              <ul>
+                {retake.steps.map((step) => (
+                  <li key={step}>{step}</li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
         {error ? <p className="alert" role="alert">{error}</p> : null}
         {busy ? <p>Reading the ridges…</p> : null}
         <h2>The print</h2>

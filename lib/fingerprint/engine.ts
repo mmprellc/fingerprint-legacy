@@ -342,10 +342,9 @@ function contourMask(component: Uint8Array, w: number, h: number) {
  * ridges are closed so the silhouette stays one piece, then clipped to the
  * print's own outline so words cannot sit in the blank margin.
  */
-function printSilhouette(gray: Float32Array, varied: Uint8Array, w: number, h: number, ridgesAreDark: boolean) {
+function printSilhouette(gray: Float32Array, varied: Uint8Array, w: number, h: number, ridgesAreDark: boolean, delta = 30) {
   const paper = paperTone(gray, w, h, ridgesAreDark);
   const ink = new Uint8Array(w * h);
-  const delta = 30;
   for (let i = 0; i < gray.length; i++) {
     const v = gray[i];
     if (ridgesAreDark ? v < paper - delta : v > paper + delta) ink[i] = 1;
@@ -1442,11 +1441,12 @@ function streamlineRidges(
   w: number,
   h: number,
   period: number,
+  sepFactor = 1,
 ) {
   const st = stats(enhanced, mask);
   const snapFloor = st.mean - 0.02 * st.std;
-  const dsep = period;
-  const dtest = period * 0.74;
+  const dsep = period * sepFactor;
+  const dtest = period * 0.74 * sepFactor;
   const step = 0.85;
   const committed = new SepGrid(period * 0.42);
   const angAt = (x: number, y: number) => {
@@ -1652,13 +1652,13 @@ function streamlineRidges(
   return ridges;
 }
 
-function prepare(gray: Float32Array, w: number, h: number, ridgesAreDark: boolean) {
+function prepare(gray: Float32Array, w: number, h: number, ridgesAreDark: boolean, inkDelta = 30) {
   const bright = new Float32Array(w * h);
   for (let i = 0; i < gray.length; i++) bright[i] = ridgesAreDark ? 255 - gray[i] : gray[i];
   const denoised = median3(bright, w, h);
   const soft = blurSeparable(denoised, w, h, 1);
   const varied = varianceMask(soft, w, h);
-  const mask = printSilhouette(gray, varied, w, h, ridgesAreDark);
+  const mask = printSilhouette(gray, varied, w, h, ridgesAreDark, inkDelta);
   const { orient, coherence } = orientationField(soft, mask, w, h);
   const norm = localNormalize(soft, mask, w, h);
   const period = estimatePeriod(norm, orient, mask, coherence, w, h);
@@ -1666,12 +1666,12 @@ function prepare(gray: Float32Array, w: number, h: number, ridgesAreDark: boolea
 }
 
 /** Drop a ridge that spends most of its length on top of a longer one. */
-function enforceSpacing(ridges: Ridge[], period: number) {
+function enforceSpacing(ridges: Ridge[], period: number, spacingLimit = 0.82, spacingHard = 0.62) {
   const kept: Ridge[] = [];
   const grid = new SepGrid(period * 0.45);
   const sorted = ridges.slice().sort((a, b) => b.length - a.length);
-  const limit = period * 0.82;
-  const hardLimit = period * 0.62;
+  const limit = period * spacingLimit;
+  const hardLimit = period * spacingHard;
   for (const ridge of sorted) {
     let close = 0;
     let hard = 0;
@@ -1711,7 +1711,11 @@ export function extractFromGray(grayIn: Float32Array, widthIn: number, heightIn:
   let ridgesAreDark =
     options.ridges === "dark" ? true : options.ridges === "light" ? false : detectDarkRidges(gray, w, h);
 
-  let prep = prepare(gray, w, h, ridgesAreDark);
+  const inkDelta = options.profile?.inkDelta ?? 30;
+  const sepFactor = options.profile?.sepFactor ?? 1;
+  const spacingLimit = options.profile?.spacingLimit ?? 0.82;
+  const spacingHard = options.profile?.spacingHard ?? 0.62;
+  let prep = prepare(gray, w, h, ridgesAreDark, inkDelta);
   for (let pass = 0; pass < 2 && options.rescale !== false; pass++) {
     if (prep.period < 6 || prep.period > 22) break;
     if (Math.abs(prep.period - targetPeriod) < 1.25) break;
@@ -1728,7 +1732,7 @@ export function extractFromGray(grayIn: Float32Array, widthIn: number, heightIn:
     gray = resizeBilinear(gray, w, h, nw, nh);
     w = nw;
     h = nh;
-    prep = prepare(gray, w, h, ridgesAreDark);
+    prep = prepare(gray, w, h, ridgesAreDark, inkDelta);
   }
 
   let enhanced = gabor(prep.norm, prep.orient, prep.mask, w, h, prep.period);
@@ -1764,8 +1768,8 @@ export function extractFromGray(grayIn: Float32Array, widthIn: number, heightIn:
     }
   }
 
-  const traced = streamlineRidges(enhanced, prep.orient, prep.mask, w, h, prep.period);
-  let ridges = traced.length > 6 ? enforceSpacing(joinRidges(traced, prep.period), prep.period) : [];
+  const traced = streamlineRidges(enhanced, prep.orient, prep.mask, w, h, prep.period, sepFactor);
+  let ridges = traced.length > 6 ? enforceSpacing(joinRidges(traced, prep.period), prep.period, spacingLimit, spacingHard) : [];
 
   let binary = new Uint8Array(w * h);
   let skeleton = binary;
@@ -1803,6 +1807,7 @@ export function extractFromGray(grayIn: Float32Array, widthIn: number, heightIn:
     ridges,
     warnings,
     ridgesAreDark,
+    mask: options.keepMask ? prep.mask : undefined,
     debug,
   };
 }

@@ -371,6 +371,10 @@ textarea.verses { min-height: 160px; }
   align-items: center;
 }
 .alert { background: #f3e4d4; border: 1px solid var(--taupe); padding: 0.7rem 0.8rem; }
+.retake strong { display: block; margin-bottom: 0.35rem; }
+.retake p { margin: 0; }
+.retake ul { margin: 0.45rem 0 0; padding-left: 1.15rem; }
+.retake li { margin: 0.2rem 0; }
 .camera { display: grid; gap: 0.5rem; }
 .camera video { width: 100%; background: #111; }
 
