@@ -86,11 +86,12 @@ async function main() {
     period: result.period,
     matchSource: true,
   });
-  const footerDates = (randyCzyzStyle.footer || "").split("4.20.1955").length - 1;
-  const coreDate = preview.svg.split("4.20.1955").length - 1 - footerDates;
-  const secondaryDate = preview.svg.split("10.17.1955").length - 1;
-  if (coreDate !== 1) throw new Error(`Center date should appear once on the ridges, found ${coreDate}`);
-  if (secondaryDate !== 1) throw new Error(`Secondary date should appear once on the ridges, found ${secondaryDate}`);
+  if (preview.svg.split("Randy Czyz 4.20.1955").length - 1 !== 1) {
+    throw new Error("Randy's name and date should sit together once on the core");
+  }
+  if (preview.svg.split("Maryanne Czyz 10.17.1955").length - 1 !== 1) {
+    throw new Error("Maryanne's name and date should sit together once on the next ridge");
+  }
   const photoRaw = await sharp(photo).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   const photoGray = rgbaToGray(photoRaw.data, photoRaw.info.width, photoRaw.info.height);
   const stats = coverageStats(photoGray, photoRaw.info.width, photoRaw.info.height, result.ridges, result.period);
@@ -140,11 +141,11 @@ async function main() {
 
   const artifacts = "/opt/cursor/artifacts";
   fs.mkdirSync(artifacts, { recursive: true });
-  fs.copyFileSync(path.join(out, "randy-czyz.png"), path.join(artifacts, "randy_czyz_full_artwork.png"));
-  fs.copyFileSync(path.join(out, "randy-czyz-closeup.png"), path.join(artifacts, "randy_czyz_full_closeup.png"));
-  fs.copyFileSync(path.join(out, "randy-czyz-compare.png"), path.join(artifacts, "randy_czyz_full_side_by_side.png"));
-  fs.copyFileSync(path.join(out, "randy-czyz-overlay.png"), path.join(artifacts, "randy_czyz_full_overlay.png"));
-  fs.copyFileSync(path.join(out, "randy-czyz.pdf"), path.join(artifacts, "randy_czyz_full.pdf"));
+  fs.copyFileSync(path.join(out, "randy-czyz.png"), path.join(artifacts, "randy_czyz_tip_artwork.png"));
+  fs.copyFileSync(path.join(out, "randy-czyz-closeup.png"), path.join(artifacts, "randy_czyz_tip_closeup.png"));
+  fs.copyFileSync(path.join(out, "randy-czyz-compare.png"), path.join(artifacts, "randy_czyz_tip_side_by_side.png"));
+  fs.copyFileSync(path.join(out, "randy-czyz-overlay.png"), path.join(artifacts, "randy_czyz_tip_overlay.png"));
+  fs.copyFileSync(path.join(out, "randy-czyz.pdf"), path.join(artifacts, "randy_czyz_tip.pdf"));
   console.log(`artwork ${full.width}x${full.height} core ${core.x.toFixed(0)},${core.y.toFixed(0)} crop ${left},${top} ${cropW}x${cropH}`);
 
   const cover = stats.hit / Math.max(1, stats.ink);
@@ -220,7 +221,7 @@ function coverageStats(gray: Float32Array, w: number, h: number, ridges: Ridge[]
   const step = 4;
   for (let y = 0; y < h; y += step) {
     for (let x = 0; x < w; x += step) {
-      if (gray[y * w + x] >= paper - 16) continue;
+      if (gray[y * w + x] >= paper - 28) continue;
       ink++;
       inkYs.push(y);
       if (nearest(x, y) <= period * 0.65) hit++;

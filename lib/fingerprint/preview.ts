@@ -1,5 +1,5 @@
 import { escapeXml, toPathD } from "./geometry";
-import { estimateWordWidth, fontSizeFor, planPortrait, ridgeWidth, roleScale, UNDERSTROKE } from "./lettering";
+import { estimateWordWidth, fontSizeFor, planPortrait, ridgeWidth, rimWeights, roleScale, UNDERSTROKE } from "./lettering";
 import { FONTS, INK_PRESETS, type PrintStyle, type Ridge } from "./types";
 
 export { fontSizeFor };
@@ -120,6 +120,7 @@ export function buildPreviewSvg(
   let index = 0;
   for (let printIndex = 0; printIndex < mapped.length; printIndex++) {
     const ridges = mapped[printIndex];
+    const rims = rimWeights(ridges);
     const bodySize = fontSize * roleScale("body");
     const planned = planPortrait(
       ridges,
@@ -134,9 +135,14 @@ export function buildPreviewSvg(
     );
     planned.forEach((runs, ridgeIndex) => {
       const ridge = ridges[ridgeIndex];
+      const rim = rims[ridgeIndex] ?? 0;
       const d = toPathD(ridge.points);
       strokes.push(`<path d="${d}" fill="none" stroke="${preset.ink}" stroke-width="${Math.max(0.8, period * 0.08)}" stroke-linecap="round" stroke-linejoin="round"/>`);
-      if (understroke) {
+      if (rim > 0.55) {
+        inkPaths.push(
+          `<path d="${d}" fill="none" stroke="#141618" stroke-width="${(period * (0.1 + 0.14 * rim)).toFixed(2)}" stroke-linecap="round" stroke-linejoin="round"/>`,
+        );
+      } else if (understroke) {
         inkPaths.push(`<path d="${d}" fill="none" stroke="${preset.ink}" stroke-width="${bridge.toFixed(2)}" stroke-linecap="round" stroke-linejoin="round"/>`);
       }
       for (const run of runs) {
@@ -145,8 +151,11 @@ export function buildPreviewSvg(
         const id = `r${index++}`;
         defs.push(`<path id="${id}" d="${toPathD(run.points)}"/>`);
         const dy = (size * 0.38).toFixed(2);
+        const tracking = run.role === "body" ? -size * (0.045 + rim * 0.03) : -size * 0.04;
+        const weight = run.role === "core" ? size * 0.04 : run.role === "secondary" ? size * 0.03 : size * rim * 0.04;
+        const stroke = weight > 0.2 ? ` stroke="#141618" stroke-width="${weight.toFixed(2)}" paint-order="stroke fill" stroke-linejoin="round"` : "";
         texts.push(
-          `<text class="ridge ridge-${run.role}" font-size="${size.toFixed(2)}" letter-spacing="${(-size * 0.045).toFixed(2)}" fill="${preset.ink}" font-family="${escapeXml(opts?.fontFamily || font.family)}"><textPath href="#${id}" dy="${dy}">${escapeXml(run.text)}</textPath></text>`,
+          `<text class="ridge ridge-${run.role}" font-size="${size.toFixed(2)}" letter-spacing="${tracking.toFixed(2)}" fill="${rim > 0.4 ? "#1A1C1E" : preset.ink}" font-family="${escapeXml(opts?.fontFamily || font.family)}"${stroke}><textPath href="#${id}" dy="${dy}">${escapeXml(run.text)}</textPath></text>`,
         );
       }
     });

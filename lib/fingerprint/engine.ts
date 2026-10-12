@@ -258,34 +258,108 @@ function paperTone(gray: Float32Array, w: number, h: number, ridgesAreDark: bool
   return samples[Math.min(samples.length - 1, Math.floor(samples.length * q))];
 }
 
+function smoothEdge(values: Float32Array, radius: number) {
+  const median = new Float32Array(values.length).fill(-1);
+  for (let i = 0; i < values.length; i++) {
+    if (values[i] < 0) continue;
+    const window: number[] = [];
+    for (let k = -radius; k <= radius; k++) {
+      const j = i + k;
+      if (j < 0 || j >= values.length || values[j] < 0) continue;
+      window.push(values[j]);
+    }
+    if (!window.length) continue;
+    window.sort((a, b) => a - b);
+    median[i] = window[Math.floor(window.length / 2)];
+  }
+  const blurred = new Float32Array(values.length).fill(-1);
+  const rad = Math.max(4, Math.round(radius * 0.65));
+  for (let i = 0; i < median.length; i++) {
+    if (median[i] < 0) continue;
+    let acc = 0;
+    let weight = 0;
+    for (let k = -rad; k <= rad; k++) {
+      const j = i + k;
+      if (j < 0 || j >= median.length || median[j] < 0) continue;
+      const w = Math.exp(-(k * k) / (2 * rad * rad));
+      acc += median[j] * w;
+      weight += w;
+    }
+    blurred[i] = weight ? acc / weight : median[i];
+  }
+  return blurred;
+}
+
+/**
+ * The print's own ink outline: narrower at the fingertip, round through the
+ * middle. A pale corner outside that outline is left as paper.
+ */
+function contourMask(component: Uint8Array, w: number, h: number) {
+  const left = new Float32Array(h).fill(-1);
+  const right = new Float32Array(h).fill(-1);
+  for (let y = 0; y < h; y++) {
+    let run = 0;
+    let runL = -1;
+    let best = 0;
+    let bestL = -1;
+    let bestR = -1;
+    const row = y * w;
+    for (let x = 0; x <= w; x++) {
+      const on = x < w && component[row + x] === 1;
+      if (on) {
+        if (runL < 0) runL = x;
+        run++;
+      } else if (runL >= 0) {
+        if (run > best) {
+          best = run;
+          bestL = runL;
+          bestR = x - 1;
+        }
+        run = 0;
+        runL = -1;
+      }
+    }
+    if (best >= 18) {
+      left[y] = bestL;
+      right[y] = bestR;
+    }
+  }
+  const smoothL = smoothEdge(left, 18);
+  const smoothR = smoothEdge(right, 18);
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    if (smoothL[y] < 0 || smoothR[y] < smoothL[y]) continue;
+    const x0 = Math.max(0, Math.round(smoothL[y]));
+    const x1 = Math.min(w - 1, Math.round(smoothR[y]));
+    const row = y * w;
+    for (let x = x0; x <= x1; x++) out[row + x] = 1;
+  }
+  return out;
+}
+
 /**
  * The whole inked oval, not only the sharpest blocks. Valleys between thin
- * ridges are closed so the silhouette stays one piece.
+ * ridges are closed so the silhouette stays one piece, then clipped to the
+ * print's own outline so words cannot sit in the blank margin.
  */
 function printSilhouette(gray: Float32Array, varied: Uint8Array, w: number, h: number, ridgesAreDark: boolean) {
   const paper = paperTone(gray, w, h, ridgesAreDark);
   const ink = new Uint8Array(w * h);
-  const delta = 16;
-  const faint = 6;
+  const delta = 30;
   for (let i = 0; i < gray.length; i++) {
     const v = gray[i];
-    const darkEnough = ridgesAreDark ? v < paper - delta : v > paper + delta;
-    const faintRidge = varied[i] && (ridgesAreDark ? v < paper - faint : v > paper + faint);
-    if (darkEnough || faintRidge) ink[i] = 1;
+    if (ridgesAreDark ? v < paper - delta : v > paper + delta) ink[i] = 1;
   }
-  const radius = Math.max(8, Math.round(Math.min(w, h) * 0.012));
+  const radius = Math.max(6, Math.round(Math.min(w, h) * 0.007));
   let solid = dilateSep(ink, w, h, radius);
-  solid = erodeSep(solid, w, h, radius);
+  solid = erodeSep(solid, w, h, Math.max(1, radius - 2));
   solid = fillHoles(solid, w, h);
   solid = largestComponent(solid, w, h);
-  solid = erodeSep(solid, w, h, 1);
+  solid = contourMask(solid, w, h);
+  solid = erodeSep(solid, w, h, 2);
   const variedSolid = Uint8Array.from(solidifyMask(varied, w, h));
   const inkN = countOn(solid);
-  const variedN = countOn(variedSolid);
-  if (inkN < w * h * 0.02 || inkN < variedN * 0.75) {
-    for (let i = 0; i < solid.length; i++) if (variedSolid[i]) solid[i] = 1;
-    solid = largestComponent(fillHoles(solid, w, h), w, h);
-  }
+  if (inkN < w * h * 0.02) solid = variedSolid;
   if (process.env.RIDGE_DEBUG) {
     let minY = h;
     let maxY = 0;
@@ -302,7 +376,7 @@ function printSilhouette(gray: Float32Array, varied: Uint8Array, w: number, h: n
         if (x > maxX) maxX = x;
       }
     }
-    console.log("silhouette", `${n}px`, `paper ${paper.toFixed(1)}`, `x ${minX}-${maxX}`, `y ${minY}-${maxY}`, `varied ${variedN}`);
+    console.log("silhouette", `${n}px`, `paper ${paper.toFixed(1)}`, `x ${minX}-${maxX}`, `y ${minY}-${maxY}`);
   }
   return solid;
 }

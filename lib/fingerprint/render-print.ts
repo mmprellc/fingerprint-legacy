@@ -3,7 +3,7 @@ import opentype from "opentype.js";
 import { PDFDocument } from "pdf-lib";
 import sharp from "sharp";
 import { toPathD } from "./geometry";
-import { fontSizeFor, placeGlyphs, planPortrait, poseAt, ridgeWidth, roleScale, UNDERSTROKE } from "./lettering";
+import { fontSizeFor, placeGlyphs, planPortrait, poseAt, rimWeights, roleScale } from "./lettering";
 import { fontById, mapPrint, presetById } from "./preview";
 import type { PreviewPrint } from "./preview";
 import type { PrintStyle, Pt } from "./types";
@@ -44,8 +44,16 @@ function measureToken(font: GlyphFont, word: string, fontSize: number, tracking:
   return width;
 }
 
-function layoutRun(font: GlyphFont, text: string, points: Pt[], fontSize: number) {
-  const tracking = -fontSize * 0.05;
+function mixHex(from: string, to: string, t: number) {
+  const a = hexToRgb(from);
+  const b = hexToRgb(to);
+  const mix = (start: number, end: number) => Math.round(start + (end - start) * t);
+  const hex = (value: number) => value.toString(16).padStart(2, "0");
+  return `#${hex(mix(a.r, b.r))}${hex(mix(a.g, b.g))}${hex(mix(a.b, b.b))}`;
+}
+
+function layoutRun(font: GlyphFont, text: string, points: Pt[], fontSize: number, trackingEm = 0.05) {
+  const tracking = -fontSize * trackingEm;
   const glyphs = placeGlyphs(
     text,
     pathLengthOf(points),
@@ -157,11 +165,11 @@ export async function renderArtwork(request: RenderRequest) {
   }
   const fontSize = fontSizeFor(request.period, request.style.textScale || 1) * fit;
   const ink = preset.ink;
-  const bridge = ridgeWidth(request.period) * fit * UNDERSTROKE;
   const groups: string[] = [];
   const defs: string[] = [];
   request.prints.forEach((print) => {
     const ridges = mapPrint(print);
+    const rims = rimWeights(ridges);
     const sourceSize = fontSizeFor(request.period, request.style.textScale || 1);
     const planned = planPortrait(
       ridges,
@@ -176,28 +184,31 @@ export async function renderArtwork(request: RenderRequest) {
     );
     const body: string[] = [];
     planned.forEach((runs, ridgeIndex) => {
+      const rim = rims[ridgeIndex] ?? 0;
+      const ridgeInk = mixHex(ink, "#101214", Math.min(1, 0.38 + rim * 0.55));
       const points = ridges[ridgeIndex].points.map((point) => ({
         x: ox + (point.x - minX) * fit,
         y: oy + (point.y - minY) * fit,
       }));
-      if (bridge > 0.3 && pathLengthOf(points) >= fontSize * 0.9) {
+      const ridgeStroke = request.period * fit * (0.15 + 0.12 * rim);
+      if (pathLengthOf(points) >= fontSize * 0.9) {
         body.push(
-          `<path d="${toPathD(points)}" fill="none" stroke="${ink}" stroke-width="${bridge.toFixed(2)}" stroke-linecap="round" stroke-linejoin="round"/>`,
+          `<path d="${toPathD(points)}" fill="none" stroke="${ridgeInk}" stroke-width="${ridgeStroke.toFixed(2)}" stroke-linecap="round" stroke-linejoin="round"/>`,
         );
       }
       for (const run of runs) {
         if (!run.text) continue;
         const size = fontSize * roleScale(run.role);
-        const weight = size * (run.role === "core" ? 0.02 : run.role === "secondary" ? 0.015 : 0);
+        const weight = size * (run.role === "core" ? 0.045 : run.role === "secondary" ? 0.034 : 0.01 + rim * 0.05);
         const placed = run.points.map((point) => ({
           x: ox + (point.x - minX) * fit,
           y: oy + (point.y - minY) * fit,
         }));
-        const glyphs = layoutRun(face, run.text, placed, size);
-        const stroke = weight > 0.15 ? ` stroke="${ink}" stroke-width="${weight.toFixed(2)}" stroke-linejoin="round"` : "";
+        const glyphs = layoutRun(face, run.text, placed, size, run.role === "body" ? 0.05 + rim * 0.03 : 0.045);
+        const stroke = weight > 0.12 ? ` stroke="${ridgeInk}" stroke-width="${weight.toFixed(2)}" stroke-linejoin="round"` : "";
         for (const glyph of glyphs) {
           body.push(
-            `<g transform="translate(${glyph.x.toFixed(2)} ${glyph.y.toFixed(2)}) rotate(${glyph.angle.toFixed(2)})"><path d="${glyph.d}" fill="${ink}"${stroke}/></g>`,
+            `<g transform="translate(${glyph.x.toFixed(2)} ${glyph.y.toFixed(2)}) rotate(${glyph.angle.toFixed(2)})"><path d="${glyph.d}" fill="${ridgeInk}"${stroke}/></g>`,
           );
         }
       }

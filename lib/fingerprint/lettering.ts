@@ -280,10 +280,51 @@ export function dedicationWords(style: PrintStyle, role: "core" | "secondary") {
 }
 
 export function roleScale(role: RidgeRole) {
-  // Dedications sit slightly larger, still inside 70% of the ridge period.
-  if (role === "core") return 1.06;
-  if (role === "secondary") return 1.03;
+  // Dedications sit slightly larger and bolder, still inside 70% of the ridge period.
+  if (role === "core") return 1.08;
+  if (role === "secondary") return 1.05;
   return 1;
+}
+
+/** 0 in the interior, 1 on the outer rim, so the oval reads from across the room. */
+export function rimWeights(ridges: { points: Pt[] }[]): number[] {
+  let sx = 0;
+  let sy = 0;
+  let n = 0;
+  for (const ridge of ridges) {
+    for (let i = 0; i < ridge.points.length; i += 3) {
+      sx += ridge.points[i].x;
+      sy += ridge.points[i].y;
+      n++;
+    }
+  }
+  if (!n) return ridges.map(() => 0);
+  const cx = sx / n;
+  const cy = sy / n;
+  const bins = 72;
+  const rad = new Float32Array(bins);
+  for (const ridge of ridges) {
+    for (const point of ridge.points) {
+      const ang = Math.atan2(point.y - cy, point.x - cx);
+      const bin = Math.round(((ang + Math.PI) / (Math.PI * 2)) * bins) % bins;
+      const r = Math.hypot(point.x - cx, point.y - cy);
+      if (r > rad[bin]) rad[bin] = r;
+    }
+  }
+  return ridges.map((ridge) => {
+    const samples: number[] = [];
+    for (let i = 0; i < ridge.points.length; i += 2) {
+      const point = ridge.points[i];
+      const ang = Math.atan2(point.y - cy, point.x - cx);
+      const bin = Math.round(((ang + Math.PI) / (Math.PI * 2)) * bins) % bins;
+      const limit = Math.max(rad[bin], rad[(bin + 1) % bins], rad[(bin + bins - 1) % bins], 1);
+      samples.push(Math.hypot(point.x - cx, point.y - cy) / limit);
+    }
+    if (!samples.length) return 0;
+    samples.sort((a, b) => a - b);
+    const median = samples[Math.floor(samples.length / 2)];
+    return Math.max(0, Math.min(1, (median - 0.74) / 0.2));
+  });
 }
 
 export type PlannedRun = { points: Pt[]; text: string; role: RidgeRole };
@@ -307,8 +348,8 @@ function centerSlice(points: Pt[], textWidth: number) {
 }
 
 /**
- * One dedication phrase per core ridge, each placed once. Names and verses
- * fill every other run, including the unused ends of a dedication ridge.
+ * Each dedication is one phrase on one ridge: the name and date stay together.
+ * Names and verses fill every other run, including the unused ends of a dedication ridge.
  */
 export function planPortrait(
   ridges: { points: Pt[] }[],
@@ -318,11 +359,11 @@ export function planPortrait(
   measure: (word: string, role: RidgeRole) => number,
   gap: number,
 ): PlannedRun[][] {
-  const pairs: { role: "core" | "secondary"; lines: string[] }[] = [];
-  const coreLines = [cleanLine(style.centerName), cleanLine(style.centerDetail)].filter(Boolean);
-  const secondaryLines = [cleanLine(style.secondaryName), cleanLine(style.secondaryDetail)].filter(Boolean);
-  if (coreLines.length) pairs.push({ role: "core", lines: coreLines });
-  if (secondaryLines.length) pairs.push({ role: "secondary", lines: secondaryLines });
+  const pairs: { role: "core" | "secondary"; phrase: string }[] = [];
+  const corePhrase = [cleanLine(style.centerName), cleanLine(style.centerDetail)].filter(Boolean).join(" ");
+  const secondaryPhrase = [cleanLine(style.secondaryName), cleanLine(style.secondaryDetail)].filter(Boolean).join(" ");
+  if (corePhrase) pairs.push({ role: "core", phrase: corePhrase });
+  if (secondaryPhrase) pairs.push({ role: "secondary", phrase: secondaryPhrase });
 
   const origin = printCore(ridges, period);
   const ranked = ridges
@@ -339,40 +380,33 @@ export function planPortrait(
   let minDistance = -1;
 
   for (const pair of pairs) {
-    let pending = pair.lines.slice();
-    let guard = 0;
-    while (pending.length && guard++ < ranked.length + 2) {
-      let host = -1;
-      for (const item of ranked) {
-        if (usedRidges.has(item.index)) continue;
-        if (minDistance >= 0 && item.distance < minDistance - period * 0.3) continue;
-        const need = measure(pending[0], pair.role) + 2.6;
-        const runs = uprightRuns(ridges[item.index].points);
-        if (runs.some((run) => pathLength(run) >= need)) {
-          host = item.index;
-          minDistance = item.distance;
-          break;
+    const need = measure(pair.phrase, pair.role) + 2.6;
+    let host = -1;
+    let runIndex = -1;
+    let hostDistance = Infinity;
+    for (const item of ranked) {
+      if (usedRidges.has(item.index)) continue;
+      if (minDistance >= 0 && item.distance < minDistance - period * 0.25) continue;
+      const runs = uprightRuns(ridges[item.index].points);
+      let best = -1;
+      let bestLen = 0;
+      runs.forEach((run, index) => {
+        const len = pathLength(run);
+        if (len >= need && len > bestLen) {
+          best = index;
+          bestLen = len;
         }
-      }
-      if (host < 0) break;
-      usedRidges.add(host);
-      const runs = uprightRuns(ridges[host].points);
-      const order = runs
-        .map((run, runIndex) => ({ runIndex, length: pathLength(run) }))
-        .sort((a, b) => b.length - a.length);
-      const placed: { role: RidgeRole; line: string; run: number }[] = [];
-      const usedRuns = new Set<number>();
-      for (const line of pending) {
-        const need = measure(line, pair.role) + 2.6;
-        const fit = order.find((item) => !usedRuns.has(item.runIndex) && item.length >= need);
-        if (!fit) break;
-        usedRuns.add(fit.runIndex);
-        placed.push({ role: pair.role, line, run: fit.runIndex });
-      }
-      if (!placed.length) break;
-      hosting.set(host, placed);
-      pending = pending.slice(placed.length);
+      });
+      if (best < 0) continue;
+      host = item.index;
+      runIndex = best;
+      hostDistance = item.distance;
+      break;
     }
+    if (host < 0) continue;
+    usedRidges.add(host);
+    minDistance = hostDistance;
+    hosting.set(host, [{ role: pair.role, line: pair.phrase, run: runIndex }]);
   }
 
   const plans: PlannedRun[][] = ridges.map(() => []);
