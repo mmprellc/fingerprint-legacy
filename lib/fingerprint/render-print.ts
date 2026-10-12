@@ -3,7 +3,7 @@ import opentype from "opentype.js";
 import { PDFDocument } from "pdf-lib";
 import sharp from "sharp";
 import { toPathD } from "./geometry";
-import { fontSizeFor, packRuns, placeGlyphs, poseAt, ridgeWidth, UNDERSTROKE, uprightRuns, wordsOf } from "./lettering";
+import { ellipsePath, fontSizeFor, inPlaque, packRuns, placeGlyphs, plaqueFor, poseAt, ridgeWidth, ridgeWords, UNDERSTROKE, uprightRuns } from "./lettering";
 import { fontById, mapPrint, presetById } from "./preview";
 import type { PreviewPrint } from "./preview";
 import type { PrintStyle, Pt } from "./types";
@@ -34,10 +34,14 @@ function advanceOf(font: GlyphFont, ch: string, fontSize: number) {
   return ((glyph.advanceWidth ?? font.unitsPerEm * 0.5) / font.unitsPerEm) * fontSize;
 }
 
-function measureWord(font: GlyphFont, word: string, fontSize: number, tracking: number) {
+function measureToken(font: GlyphFont, word: string, fontSize: number, tracking: number, space: number) {
+  const parts = word.split(" ");
   let width = 0;
-  for (const ch of word) width += advanceOf(font, ch, fontSize) + tracking;
-  return Math.max(0, width - tracking);
+  parts.forEach((part, index) => {
+    if (index > 0) width += space;
+    for (const ch of part) width += Math.max(0.4, advanceOf(font, ch, fontSize) + tracking);
+  });
+  return width;
 }
 
 function layoutRun(font: GlyphFont, text: string, points: Pt[], fontSize: number) {
@@ -46,7 +50,7 @@ function layoutRun(font: GlyphFont, text: string, points: Pt[], fontSize: number
     text,
     pathLengthOf(points),
     (ch) => advanceOf(font, ch, fontSize),
-    fontSize * 0.16,
+    fontSize * 0.2,
     tracking,
   );
   const placed: { d: string; x: number; y: number; angle: number }[] = [];
@@ -109,36 +113,29 @@ export async function renderArtwork(request: RenderRequest) {
   }
   const artW = Math.max(40, maxX - minX);
   const artH = Math.max(40, maxY - minY);
-  const captionBlock = request.matchSource ? 0 : request.style.title || request.style.script ? Math.round(artH * 0.14) : Math.round(artH * 0.04);
+  const hasTitle = Boolean(request.style.title?.trim());
+  const hasFooter = Boolean(request.style.footer?.trim() || request.style.script?.trim());
+  const captionBlock = request.matchSource ? 0 : Math.round(artH * ((hasTitle ? 0.1 : 0.04) + (hasFooter ? 0.09 : 0.02)));
 
   const dpi = request.dpi ?? 200;
   let paperW: number;
   let paperH: number;
-  let fit: number;
-  let ox: number;
-  let oy: number;
-  let captionPx = 0;
+  let fit = 1;
+  let ox = 0;
+  let oy = 0;
   let margin = 0;
+  let topPx = 0;
+  let bottomPx = 0;
   if (request.matchSource) {
     paperW = Math.max(...request.prints.map((print) => Math.ceil((print.tx ?? 0) + print.width * (print.scale ?? 1))));
     paperH = Math.max(...request.prints.map((print) => Math.ceil((print.ty ?? 0) + print.height * (print.scale ?? 1))));
-    fit = 1;
-    ox = 0;
-    oy = 0;
     minX = 0;
     minY = 0;
   } else if (request.inches) {
     paperW = Math.round(request.inches[0] * dpi);
     paperH = Math.round(request.inches[1] * dpi);
-    captionPx = request.style.title || request.style.script ? Math.round(paperH * 0.11) : Math.round(paperH * 0.04);
-    margin = Math.round(Math.min(paperW, paperH) * 0.06);
-    const availW = paperW - margin * 2;
-    const availH = paperH - margin * 2 - captionPx;
-    fit = Math.min(availW / artW, availH / artH);
-    ox = (paperW - artW * fit) / 2;
-    oy = margin + (availH - artH * fit) / 2;
   } else {
-    const long = 2200;
+    const long = 2400;
     const aspect = artW / (artH + captionBlock);
     if (aspect > 1) {
       paperW = long;
@@ -147,70 +144,130 @@ export async function renderArtwork(request: RenderRequest) {
       paperH = long;
       paperW = Math.round(long * aspect);
     }
-    captionPx = request.style.title || request.style.script ? Math.round(paperH * 0.11) : Math.round(paperH * 0.04);
-    margin = Math.round(Math.min(paperW, paperH) * 0.06);
+  }
+  if (!request.matchSource) {
+    margin = Math.round(Math.min(paperW, paperH) * 0.055);
+    topPx = hasTitle ? Math.round(paperH * 0.078) : margin;
+    bottomPx = hasFooter ? Math.round(paperH * 0.07) : margin;
     const availW = paperW - margin * 2;
-    const availH = paperH - margin * 2 - captionPx;
+    const availH = paperH - topPx - bottomPx;
     fit = Math.min(availW / artW, availH / artH);
     ox = (paperW - artW * fit) / 2;
-    oy = margin + (availH - artH * fit) / 2;
+    oy = topPx + (availH - artH * fit) / 2;
   }
   const fontSize = fontSizeFor(request.period, request.style.textScale || 1) * fit;
   const ink = preset.ink;
   const bridge = ridgeWidth(request.period) * fit * UNDERSTROKE;
   const tracking = -fontSize * 0.055;
   const groups: string[] = [];
-  request.prints.forEach((print) => {
-    const words = wordsOf(print.lines);
-    const measure = (word: string) => measureWord(face, word, fontSize, tracking);
+  const defs: string[] = [];
+  request.prints.forEach((print, printIndex) => {
+    const words = ridgeWords(request.style.names, request.style.scriptures, print.lines);
+    const gap = fontSize * 0.2;
+    const measure = (word: string) => measureToken(face, word, fontSize, tracking, gap);
+    const cursor = { i: 0 };
     const ridges = mapPrint(print);
-    for (const ridge of ridges) {
-      const points = ridge.points.map((point) => ({
-        x: ox + (point.x - minX) * fit,
-        y: oy + (point.y - minY) * fit,
-      }));
-      if (pathLengthOf(points) < fontSize * 1.4) continue;
-      groups.push(
+    const sourcePlaque = plaqueFor(ridges, request.style, request.period);
+    const plaque = sourcePlaque
+      ? {
+          cx: ox + (sourcePlaque.cx - minX) * fit,
+          cy: oy + (sourcePlaque.cy - minY) * fit,
+          rx: sourcePlaque.rx * fit,
+          ry: sourcePlaque.ry * fit,
+          lines: sourcePlaque.lines.map((line) => ({ ...line, fontSize: line.fontSize * fit })),
+          baselines: sourcePlaque.baselines.map((baseline) => oy + (baseline - minY) * fit),
+        }
+      : null;
+    if (plaque) fitPlaque(plaque, face, titleFace, ridgeWidth(request.period) * fit);
+    if (plaque) {
+      defs.push(
+        `<clipPath id="keep${printIndex}"><path fill-rule="evenodd" d="M0 0 H${paperW} V${paperH} H0 Z ${ellipsePath(plaque.cx, plaque.cy, plaque.rx, plaque.ry)}"/></clipPath>`,
+      );
+    }
+    const body: string[] = [];
+    const drawn = ridges.map((ridge) => ridge.points.map((point) => ({
+      x: ox + (point.x - minX) * fit,
+      y: oy + (point.y - minY) * fit,
+    }))).filter((points) => pathLengthOf(points) >= fontSize * 1.4);
+    const ceiling = drawn.reduce((max, points) => Math.max(max, ...uprightRuns(points).map((run) => pathLengthOf(run))), 0);
+    for (const points of drawn) {
+      body.push(
         `<path d="${toPathD(points)}" fill="none" stroke="${ink}" stroke-width="${bridge.toFixed(2)}" stroke-linecap="round" stroke-linejoin="round"/>`,
       );
-      const packed = packRuns(uprightRuns(points), words, measure, fontSize * 0.16);
+      const packed = packRuns(uprightRuns(points), words, measure, gap, cursor, ceiling);
       for (const run of packed) {
         if (!run.text) continue;
         const glyphs = layoutRun(face, run.text, run.points, fontSize);
         for (const glyph of glyphs) {
-          groups.push(
+          if (plaque && inPlaque(glyph.x, glyph.y, plaque, fontSize * 0.45)) continue;
+          body.push(
             `<g transform="translate(${glyph.x.toFixed(2)} ${glyph.y.toFixed(2)}) rotate(${glyph.angle.toFixed(2)})"><path d="${glyph.d}" fill="${ink}"/></g>`,
           );
         }
       }
     }
+    groups.push(`<g${plaque ? ` clip-path="url(#keep${printIndex})"` : ""}>${body.join("")}</g>`);
+    if (!plaque) return;
+    groups.push(`<path d="${ellipsePath(plaque.cx, plaque.cy, plaque.rx * 0.98, plaque.ry * 0.98)}" fill="${preset.paper}"/>`);
+    plaque.lines.forEach((line, lineIndex) => {
+      const font = line.emphasis ? face : titleFace;
+      const glyphs = layoutCentered(font, line.text, line.fontSize, plaque.cx, plaque.baselines[lineIndex], line.emphasis ? 0.02 : 0.04);
+      groups.push(`<g fill="${ink}">${glyphs}</g>`);
+    });
   });
 
-  const caption = request.matchSource ? "" : captionSvg(request.style, titleFace, scriptFace, paperW, paperH - margin * 0.35, ink, captionPx);
+  const caption = request.matchSource ? "" : frameCaption(request.style, titleFace, scriptFace, paperW, paperH, topPx, bottomPx, ink);
   const frame = request.frame
     ? `<rect x="${margin / 2}" y="${margin / 2}" width="${paperW - margin}" height="${paperH - margin}" fill="none" stroke="#B89A68" stroke-width="${Math.max(2, dpi * 0.01)}"/>`
     : "";
-  const svg = `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${paperW}" height="${paperH}" viewBox="0 0 ${paperW} ${paperH}"><rect width="100%" height="100%" fill="${preset.paper}"/>${frame}${groups.join("")}${caption}</svg>`;
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${paperW}" height="${paperH}" viewBox="0 0 ${paperW} ${paperH}"><rect width="100%" height="100%" fill="${preset.paper}"/>${frame}<defs>${defs.join("")}</defs>${groups.join("")}${caption}</svg>`;
 
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
   const pdf = await pngToPdf(png, request.inches, paperW, paperH, request.style.title || "Fingerprint Legacy");
   return { svg, png, pdf, width: paperW, height: paperH };
 }
 
-function captionSvg(style: PrintStyle, titleFace: GlyphFont, scriptFace: GlyphFont, paperW: number, baseline: number, ink: string, captionPx: number) {
+function fitPlaque(
+  plaque: { cx: number; cy: number; rx: number; ry: number; lines: { text: string; fontSize: number; emphasis: boolean }[]; baselines: number[] },
+  face: GlyphFont,
+  titleFace: GlyphFont,
+  pad: number,
+) {
+  let maxW = 0;
+  for (const line of plaque.lines) {
+    const font = line.emphasis ? face : titleFace;
+    const tracking = line.fontSize * (line.emphasis ? 0.02 : 0.04);
+    maxW = Math.max(maxW, measureToken(font, line.text, line.fontSize, tracking, line.fontSize * 0.2));
+  }
+  const first = plaque.lines[0];
+  const last = plaque.lines[plaque.lines.length - 1];
+  const top = plaque.baselines[0] - first.fontSize * 0.95;
+  const bottom = plaque.baselines[plaque.baselines.length - 1] + last.fontSize * 0.42;
+  plaque.rx = Math.max(plaque.rx, (maxW / 2 + pad * 1.6) / 0.98);
+  plaque.ry = Math.max(plaque.ry, (Math.max(bottom - plaque.cy, plaque.cy - top) + pad * 1.15) / 0.98);
+}
+
+function frameCaption(style: PrintStyle, titleFace: GlyphFont, scriptFace: GlyphFont, paperW: number, paperH: number, topPx: number, bottomPx: number, ink: string) {
   const parts: string[] = [];
-  if (style.title) {
-    const size = Math.max(28, captionPx * 0.28);
-    const text = style.title.toUpperCase();
-    const glyphs = layoutCentered(titleFace, text, size, paperW / 2, baseline - captionPx * 0.62, 0.12);
-    parts.push(`<g fill="${ink}">${glyphs}</g>`);
+  const maxWidth = paperW * 0.86;
+  if (style.title?.trim()) {
+    const size = fitSize(titleFace, style.title.trim().toUpperCase(), Math.max(26, Math.round(paperH * 0.026)), 18, maxWidth, 0.12);
+    parts.push(layoutCentered(titleFace, style.title.trim().toUpperCase(), size, paperW / 2, topPx * 0.66, 0.12));
   }
-  if (style.script) {
-    const size = Math.max(42, captionPx * 0.46);
-    const glyphs = layoutCentered(scriptFace, style.script, size, paperW / 2, baseline - captionPx * 0.18, 0);
-    parts.push(`<g fill="${ink}">${glyphs}</g>`);
+  if (style.footer?.trim()) {
+    const size = fitSize(titleFace, style.footer.trim(), Math.max(22, Math.round(paperH * 0.022)), 16, maxWidth, 0.03);
+    parts.push(layoutCentered(titleFace, style.footer.trim(), size, paperW / 2, paperH - bottomPx * 0.42, 0.03));
+  } else if (style.script?.trim()) {
+    const size = fitSize(scriptFace, style.script.trim(), Math.max(36, Math.round(paperH * 0.034)), 22, maxWidth, 0);
+    parts.push(layoutCentered(scriptFace, style.script.trim(), size, paperW / 2, paperH - bottomPx * 0.4, 0));
   }
-  return parts.join("");
+  return parts.length ? `<g fill="${ink}">${parts.join("")}</g>` : "";
+}
+
+function fitSize(font: GlyphFont, text: string, size: number, min: number, maxWidth: number, trackingEm: number) {
+  let next = size;
+  while (next > min && measureToken(font, text, next, next * trackingEm, next * 0.2) > maxWidth) next -= 1;
+  return next;
 }
 
 function layoutCentered(font: GlyphFont, text: string, fontSize: number, centerX: number, baseline: number, trackingEm: number) {

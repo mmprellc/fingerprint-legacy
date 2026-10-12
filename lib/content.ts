@@ -120,7 +120,32 @@ export function keepsakeBySlug(slug: string) {
   return keepsakes.find((item) => item.slug === slug);
 }
 
-export const galleryPieces = [
+export type GalleryPiece = {
+  slug: string;
+  title: string;
+  image: string;
+  occasion: string;
+  caption: string;
+  couple: boolean;
+  studio?: string;
+  pdf?: string;
+  compare?: string;
+  closeup?: string;
+};
+
+export const galleryPieces: GalleryPiece[] = [
+  {
+    slug: "randy-czyz",
+    title: "Randy Czyz",
+    image: "/pieces/randy-czyz.png",
+    occasion: "memorials",
+    caption: "A family and four verses, set into a loop. Two dedications sit in the core.",
+    couple: false,
+    studio: "/studio?piece=randy-czyz",
+    pdf: "/pieces/randy-czyz.pdf",
+    compare: "/pieces/randy-czyz-compare.png",
+    closeup: "/pieces/randy-czyz-closeup.png",
+  },
   {
     slug: "memorial",
     title: "Margaret Hale",

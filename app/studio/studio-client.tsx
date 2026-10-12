@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { buildPreviewSvg, mapPrint } from "@/lib/fingerprint/preview";
 import { INK_PRESETS, type PrintStyle, type Ridge, type RidgeFontId } from "@/lib/fingerprint/types";
+import type { StudioPiece } from "@/lib/pieces";
 import { formatMoney, buyableProducts, productById } from "@/lib/products";
 import type { Occasion } from "@/lib/content";
 
@@ -25,25 +26,30 @@ type SampleFile = { width: number; height: number; period: number; ridges: Ridge
 
 export function StudioClient({
   initialOccasion,
+  initialPiece,
   initialProduct,
   autoload,
   couple,
   occasions,
 }: {
   initialOccasion?: Occasion;
+  initialPiece?: StudioPiece;
   initialProduct: string;
   autoload: boolean;
   couple: boolean;
   occasions: Occasion[];
 }) {
   const [prints, setPrints] = useState<Draft[]>([]);
-  const [style, setStyle] = useState<PrintStyle>({
-    font: "baskerville",
-    preset: "charcoal",
-    textScale: 1,
-    title: initialOccasion?.honoree ?? "",
-    script: initialOccasion?.script ?? "Always with you.",
-  });
+  const [style, setStyle] = useState<PrintStyle>(
+    initialPiece?.style ?? {
+      font: "baskerville",
+      preset: "charcoal",
+      textScale: 1,
+      title: initialOccasion?.honoree ?? "",
+      script: initialOccasion ? "" : "Always with you.",
+      ...(initialOccasion ? { centerName: initialOccasion.honoree, names: initialOccasion.lines, footer: initialOccasion.script } : {}),
+    },
+  );
   const [productId, setProductId] = useState(initialProduct);
   const [sizeId, setSizeId] = useState(productById(initialProduct).sizes[0].id);
   const [view, setView] = useState<"words" | "lines" | "overlay" | "side">("words");
@@ -53,6 +59,7 @@ export function StudioClient({
   const [error, setError] = useState("");
   const [seedLines, setSeedLines] = useState(initialOccasion?.lines ?? ["A name", "A date", "A place they loved"]);
   const [occasionSlug, setOccasionSlug] = useState(initialOccasion?.slug ?? "");
+  const [linesOpen, setLinesOpen] = useState(() => !hasList(initialPiece?.style.names) && !hasList(initialPiece?.style.scriptures) && !hasList(initialOccasion?.lines));
   const [cameraOn, setCameraOn] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -61,6 +68,10 @@ export function StudioClient({
   useEffect(() => {
     if (started.current) return;
     started.current = true;
+    if (initialPiece) {
+      void loadNamed(initialPiece.sample, [], 0);
+      return;
+    }
     if (couple) {
       void loadCouple(initialOccasion);
     } else if (autoload) {
@@ -68,7 +79,7 @@ export function StudioClient({
     } else if (initialOccasion) {
       setPrints([]);
     }
-  }, [autoload, couple, initialOccasion]);
+  }, [autoload, couple, initialOccasion, initialPiece]);
 
   useEffect(() => () => stopCamera(), []);
 
@@ -78,9 +89,11 @@ export function StudioClient({
 
   const svg = useMemo(() => {
     if (!prints.length) return "";
+    const aligned = view !== "words";
+    const previewStyle = aligned ? { ...style, title: "", script: "", footer: "" } : style;
     const built = buildPreviewSvg(
       prints.map(toPreview),
-      { ...style, title: "", script: "" },
+      previewStyle,
       period,
       { transparent: view === "overlay" || view === "lines", fontFamily: "inherit", understroke: view !== "lines" && view !== "overlay" },
     );
@@ -107,7 +120,7 @@ export function StudioClient({
         height: data.height,
         period: data.period,
         ridges: data.ridges,
-        lines: lines.length ? lines : ["A name", "A date", "A place they loved"],
+        lines,
         tx: slot ? data.width * 0.32 : 0,
         ty: slot ? 20 : 0,
         rotation: slot ? -8 : 0,
@@ -250,7 +263,9 @@ export function StudioClient({
     }
   }
 
-  const ready = prints.some((print) => print.ridges.length > 8 && print.lines.some((line) => line.trim()));
+  const ready = prints.some((print) => print.ridges.length > 8) && (
+    hasList(style.names) || hasList(style.scriptures) || Boolean(style.centerName?.trim()) || prints.some((print) => print.lines.some((line) => line.trim()))
+  );
   const fontClass = style.font === "cormorant" ? "font-cormorant" : "font-baskerville";
 
   return (
@@ -293,8 +308,6 @@ export function StudioClient({
               ) : (
                 <div className={`svg-hold ${fontClass}`} style={{ background: view === "lines" ? preset.paper : preset.paper }} dangerouslySetInnerHTML={{ __html: svg }} />
               )}
-              {style.title ? <p className="preview-title">{style.title}</p> : null}
-              {style.script ? <p className="preview-script">{style.script}</p> : null}
             </div>
           </div>
         )}
@@ -348,30 +361,47 @@ export function StudioClient({
         )}
 
         <h2>Their words</h2>
-        {prints.map((print, slot) => (
-          <div key={print.key}>
-            <p className="note">{print.label}</p>
-            {print.lines.map((line, index) => (
-              <div className="line-row" key={`${print.key}-${index}`}>
-                <input
-                  type="text"
-                  value={line}
-                  aria-label={`Line ${index + 1} for ${print.label}`}
-                  onChange={(event) => {
-                    const lines = print.lines.slice();
-                    lines[index] = event.target.value;
-                    updateLines(slot, lines);
-                  }}
-                />
-                <button className="icon-btn" type="button" onClick={() => updateLines(slot, print.lines.filter((_, lineIndex) => lineIndex !== index))} aria-label="Remove line">Remove</button>
-              </div>
-            ))}
-            <button className="icon-btn" type="button" onClick={() => updateLines(slot, [...print.lines, ""])}>Add a line</button>
-          </div>
-        ))}
-        {!prints.length ? <p className="note">Lines appear once a print is loaded.</p> : null}
-        <label className="field"><span>Name under the portrait</span><input type="text" value={style.title} onChange={(event) => setStyle({ ...style, title: event.target.value })} /></label>
-        <label className="field"><span>Script line</span><input type="text" value={style.script} onChange={(event) => setStyle({ ...style, script: event.target.value })} /></label>
+        <label className="field"><span>Title above the portrait</span><input type="text" value={style.title} onChange={(event) => setStyle({ ...style, title: event.target.value })} /></label>
+        <label className="field"><span>Center dedication</span><input type="text" value={style.centerName ?? ""} aria-label="Center name" onChange={(event) => setStyle({ ...style, centerName: event.target.value })} /></label>
+        <label className="field"><span>Under the center name</span><input type="text" value={style.centerDetail ?? ""} aria-label="Center date or detail" onChange={(event) => setStyle({ ...style, centerDetail: event.target.value })} /></label>
+        <label className="field"><span>Secondary dedication</span><input type="text" value={style.secondaryName ?? ""} aria-label="Secondary name" onChange={(event) => setStyle({ ...style, secondaryName: event.target.value })} /></label>
+        <label className="field"><span>Under the secondary name</span><input type="text" value={style.secondaryDetail ?? ""} aria-label="Secondary date or detail" onChange={(event) => setStyle({ ...style, secondaryDetail: event.target.value })} /></label>
+        <label className="field">
+          <span>Names along the ridges, one per line</span>
+          <textarea className="names" value={(style.names ?? []).join("\n")} onChange={(event) => setStyle({ ...style, names: event.target.value.split("\n") })} />
+        </label>
+        <label className="field">
+          <span>Scriptures, one verse per line</span>
+          <textarea className="verses" value={(style.scriptures ?? []).join("\n")} onChange={(event) => setStyle({ ...style, scriptures: event.target.value.split("\n") })} />
+        </label>
+        <p className="note">Names stay whole. Verses repeat between them, in the order you list. The ridges themselves are not moved.</p>
+        <label className="field"><span>Line under the portrait</span><input type="text" value={style.footer ?? ""} onChange={(event) => setStyle({ ...style, footer: event.target.value })} /></label>
+        <label className="field"><span>Script line, if the footer is empty</span><input type="text" value={style.script} onChange={(event) => setStyle({ ...style, script: event.target.value })} /></label>
+        <details open={linesOpen} onToggle={(event) => setLinesOpen(event.currentTarget.open)}>
+          <summary>Short lines, when the name list is empty</summary>
+          {prints.map((print, slot) => (
+            <div key={print.key}>
+              <p className="note">{print.label}</p>
+              {print.lines.map((line, index) => (
+                <div className="line-row" key={`${print.key}-${index}`}>
+                  <input
+                    type="text"
+                    value={line}
+                    aria-label={`Line ${index + 1} for ${print.label}`}
+                    onChange={(event) => {
+                      const lines = print.lines.slice();
+                      lines[index] = event.target.value;
+                      updateLines(slot, lines);
+                    }}
+                  />
+                  <button className="icon-btn" type="button" onClick={() => updateLines(slot, print.lines.filter((_, lineIndex) => lineIndex !== index))} aria-label="Remove line">Remove</button>
+                </div>
+              ))}
+              <button className="icon-btn" type="button" onClick={() => updateLines(slot, [...print.lines, ""])}>Add a line</button>
+            </div>
+          ))}
+          {!prints.length ? <p className="note">Lines appear once a print is loaded.</p> : null}
+        </details>
 
         <h2>Finish</h2>
         <div className="swatches" role="radiogroup" aria-label="Color">
@@ -411,7 +441,18 @@ export function StudioClient({
               const next = occasions.find((item) => item.slug === slug);
               if (!next) return;
               setSeedLines(next.lines);
-              setStyle((current) => ({ ...current, title: next.honoree, script: next.script }));
+              setStyle((current) => ({
+                ...current,
+                title: next.honoree,
+                script: "",
+                footer: next.script,
+                centerName: next.honoree,
+                centerDetail: "",
+                secondaryName: "",
+                secondaryDetail: "",
+                names: next.lines,
+                scriptures: [],
+              }));
               if (prints[0]) updateLines(0, next.lines);
             }}
           >
@@ -425,11 +466,17 @@ export function StudioClient({
         </div>
       </aside>
       <style>{`
-        .font-baskerville svg text { font-family: var(--font-ridge), "Libre Baskerville", serif; }
-        .font-cormorant svg text { font-family: var(--font-serif), "Cormorant Garamond", serif; }
+        .font-baskerville svg text.ridge, .font-baskerville svg text.plaque-name { font-family: var(--font-ridge), "Libre Baskerville", serif; }
+        .font-cormorant svg text.ridge, .font-cormorant svg text.plaque-name { font-family: var(--font-ridge-alt), "Cormorant Garamond", serif; }
+        .svg-hold svg text.piece-title, .svg-hold svg text.piece-footer, .svg-hold svg text.plaque-detail { font-family: var(--font-serif), "Cormorant Garamond", serif; }
+        .svg-hold svg text.piece-script { font-family: var(--font-script), cursive; }
       `}</style>
     </div>
   );
+}
+
+function hasList(values: string[] | undefined) {
+  return Boolean(values?.some((value) => value.trim()));
 }
 
 function toPreview(print: Draft) {

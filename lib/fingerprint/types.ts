@@ -56,8 +56,22 @@ export type PrintStyle = {
   font: RidgeFontId;
   preset: string;
   textScale: number;
+  /** Piece title, set above the portrait. */
   title: string;
+  /** Legacy script accent. Used as the footer when `footer` is empty. */
   script: string;
+  /** Line under the portrait. */
+  footer?: string;
+  /** Primary dedication, set in the core. */
+  centerName?: string;
+  centerDetail?: string;
+  /** Second dedication, set just under the core. */
+  secondaryName?: string;
+  secondaryDetail?: string;
+  /** Names repeated along the ridges, one phrase each. Spelled as given. */
+  names?: string[];
+  /** Verses repeated along the ridges, in order. */
+  scriptures?: string[];
 };
 
 export const FONTS: { id: RidgeFontId; label: string; file: string; family: string; charRatio: number }[] = [

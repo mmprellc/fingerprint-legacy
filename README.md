@@ -28,7 +28,7 @@ The owner dashboard password in this prototype, until you set one, is `dev-legac
 ## Click through
 
 1. Home, How it works, Occasions, Gallery, Pricing, and the keepsake pages.
-2. Studio → **Try the sample print** (or upload a photo, or use the camera).
+2. Studio → **Try the sample print** (or upload a photo, or use the camera). The Randy Czyz piece is at `/studio?piece=randy-czyz`, and the same portrait is in the gallery with its PDF.
 3. **Continue to checkout**. With no Stripe key this is a test checkout: no card is charged.
 4. **Place test order**. The confirmation page has the PNG, SVG, and PDF.
 5. Footer → **Owner dashboard** → password `dev-legacy`. The order is listed with its status.

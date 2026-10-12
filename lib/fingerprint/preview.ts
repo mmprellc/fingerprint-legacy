@@ -1,5 +1,5 @@
-import { escapeXml, toPathD } from "./geometry";
-import { estimateWordWidth, fontSizeFor, packRuns, ridgeWidth, UNDERSTROKE, uprightRuns, wordsOf } from "./lettering";
+import { escapeXml, pathLength, toPathD } from "./geometry";
+import { ellipsePath, estimateWordWidth, fontSizeFor, packRuns, plaqueFor, ridgeWidth, ridgeWords, UNDERSTROKE, uprightRuns } from "./lettering";
 import { FONTS, INK_PRESETS, type PrintStyle, type Ridge } from "./types";
 
 export { fontSizeFor };
@@ -109,43 +109,65 @@ export function buildPreviewSvg(
       }
     }
   }
-  const caption = !opts?.frame && (style.title || style.script) ? 78 : 0;
+  const topPad = !opts?.frame && style.title ? 72 : 0;
+  const bottomPad = !opts?.frame && (style.footer || style.script) ? 78 : 0;
   const width = Math.ceil(opts?.frame?.width ?? maxX);
-  const height = Math.ceil(opts?.frame?.height ?? maxY) + caption;
+  const height = Math.ceil(opts?.frame?.height ?? maxY) + topPad + bottomPad;
   const defs: string[] = [];
   const texts: string[] = [];
   const inkPaths: string[] = [];
   const strokes: string[] = [];
   const understroke = opts?.understroke !== false;
   const bridge = Math.max(0.8, ridgeWidth(period) * UNDERSTROKE);
+  const plaques = mapped.map((ridges) => plaqueFor(ridges, style, period));
   let index = 0;
-  for (const ridges of mapped) {
-    const words = wordsOf(ridges[0]?.lines ?? []);
+  for (let printIndex = 0; printIndex < mapped.length; printIndex++) {
+    const ridges = mapped[printIndex];
+    const plaque = plaques[printIndex];
+    const words = ridgeWords(style.names, style.scriptures, ridges[0]?.lines ?? []);
     const measure = (word: string) => estimateWordWidth(word, fontSize, Math.max(font.charRatio, 0.62), tracking);
-    for (const ridge of ridges) {
+    const cursor = { i: 0 };
+    const prepared = ridges.map((ridge) => uprightRuns(ridge.points));
+    const ceiling = prepared.reduce((max, runs) => Math.max(max, ...runs.map((points) => pathLength(points))), 0);
+    prepared.forEach((runs, ridgeIndex) => {
+      const ridge = ridges[ridgeIndex];
       const d = toPathD(ridge.points);
       strokes.push(`<path d="${d}" fill="none" stroke="${preset.ink}" stroke-width="${Math.max(0.8, period * 0.08)}" stroke-linecap="round" stroke-linejoin="round"/>`);
       if (understroke) {
         inkPaths.push(`<path d="${d}" fill="none" stroke="${preset.ink}" stroke-width="${bridge.toFixed(2)}" stroke-linecap="round" stroke-linejoin="round"/>`);
       }
-      const packed = packRuns(uprightRuns(ridge.points), words, measure, space);
+      const packed = packRuns(runs, words, measure, space, cursor, ceiling);
       for (const run of packed) {
         if (!run.text) continue;
         const id = `r${index++}`;
         defs.push(`<path id="${id}" d="${toPathD(run.points)}"/>`);
         const dy = (fontSize * 0.31).toFixed(2);
         texts.push(
-          `<text font-size="${fontSize.toFixed(2)}" letter-spacing="${tracking.toFixed(2)}" fill="${preset.ink}" font-family="${escapeXml(opts?.fontFamily || font.family)}"><textPath href="#${id}" dy="${dy}">${escapeXml(run.text)}</textPath></text>`,
+          `<text class="ridge" font-size="${fontSize.toFixed(2)}" letter-spacing="${tracking.toFixed(2)}" fill="${preset.ink}" font-family="${escapeXml(opts?.fontFamily || font.family)}"><textPath href="#${id}" dy="${dy}">${escapeXml(run.text)}</textPath></text>`,
         );
       }
-    }
+    });
   }
+  const holes = plaques.filter((plaque): plaque is NonNullable<typeof plaque> => Boolean(plaque));
+  const clip = holes.length
+    ? `<clipPath id="ridgekeep"><path fill-rule="evenodd" d="M -40 -40 H ${width + 40} V ${height + 40} H -40 Z ${holes.map((plaque) => ellipsePath(plaque.cx, plaque.cy, plaque.rx, plaque.ry)).join(" ")}"/></clipPath>`
+    : "";
+  const plaquesSvg = holes.map((plaque) => {
+    const paper = `<path d="${ellipsePath(plaque.cx, plaque.cy, plaque.rx, plaque.ry)}" fill="${opts?.transparent ? preset.paper : preset.paper}"/>`;
+    const labels = plaque.lines.map((line, lineIndex) => {
+      const family = line.emphasis ? (opts?.fontFamily || font.family) : "Cormorant Garamond, Georgia, serif";
+      const kind = line.emphasis ? "plaque-name" : "plaque-detail";
+      return `<text class="${kind}" x="${plaque.cx.toFixed(1)}" y="${plaque.baselines[lineIndex].toFixed(1)}" text-anchor="middle" font-size="${line.fontSize.toFixed(1)}" font-family="${escapeXml(family)}" fill="${preset.ink}">${escapeXml(line.text)}</text>`;
+    }).join("");
+    return paper + labels;
+  }).join("");
+  const footerText = style.footer || style.script || "";
   const title = style.title
-    ? `<text x="${(width / 2).toFixed(1)}" y="${height - (style.script ? 58 : 28)}" text-anchor="middle" font-family="Cormorant Garamond, Georgia, serif" font-size="26" letter-spacing="4" fill="${preset.ink}">${escapeXml(style.title.toUpperCase())}</text>`
+    ? `<text class="piece-title" x="${(width / 2).toFixed(1)}" y="46" text-anchor="middle" font-family="Cormorant Garamond, Georgia, serif" font-size="28" letter-spacing="3.5" fill="${preset.ink}">${escapeXml(style.title.toUpperCase())}</text>`
     : "";
-  const script = style.script
-    ? `<text x="${(width / 2).toFixed(1)}" y="${height - 22}" text-anchor="middle" font-family="Great Vibes, cursive" font-size="34" fill="${preset.ink}">${escapeXml(style.script)}</text>`
+  const footer = footerText
+    ? `<text class="${style.footer ? "piece-footer" : "piece-script"}" x="${(width / 2).toFixed(1)}" y="${height - 28}" text-anchor="middle" font-family="${style.footer ? "Cormorant Garamond, Georgia, serif" : "Great Vibes, cursive"}" font-size="${style.footer ? 26 : 34}" fill="${preset.ink}">${escapeXml(footerText)}</text>`
     : "";
-  const svg = `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="${opts?.transparent ? "none" : preset.paper}"/><defs>${defs.join("")}</defs><g class="ridge-ink">${inkPaths.join("")}</g><g class="ridge-strokes" style="display:none">${strokes.join("")}</g>${texts.join("")}${title}${script}</svg>`;
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><rect width="100%" height="100%" fill="${opts?.transparent ? "none" : preset.paper}"/><defs>${defs.join("")}${clip}</defs>${title}<g transform="translate(0 ${topPad})"><g clip-path="${holes.length ? "url(#ridgekeep)" : "none"}"><g class="ridge-ink">${inkPaths.join("")}</g><g class="ridge-strokes" style="display:none">${strokes.join("")}</g>${texts.join("")}</g>${plaquesSvg}</g>${footer}</svg>`;
   return { svg, width, height, fontSize, strokes: strokes.join("") };
 }

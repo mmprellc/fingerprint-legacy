@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "prove": "tsx scripts/prove.ts",
-    "generate-samples": "tsx scripts/generate-samples.ts"
+    "generate-samples": "tsx scripts/generate-samples.ts",
+    "render-randy": "tsx scripts/render-randy.ts"
   },
   "dependencies": {
     "jszip": "^3.10.1",

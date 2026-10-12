@@ -22,6 +22,26 @@ export function wordsOf(lines: string[]) {
   return words.length ? words : ["Always"];
 }
 
+/** Names stay whole. Verses are woven between them, in order, and the list repeats. */
+export function ridgeWords(names: string[] | undefined, scriptures: string[] | undefined, lines: string[]) {
+  const people = (names ?? []).map((name) => name.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const verses = (scriptures ?? []).map((verse) => verse.replace(/\s+/g, " ").trim()).filter(Boolean);
+  if (!people.length && !verses.length) return wordsOf(lines);
+  const verseWords = verses.map((verse) => verse.split(" ").filter(Boolean));
+  if (!people.length) return verseWords.flat();
+  const tokens: string[] = [];
+  let verse = 0;
+  people.forEach((name, index) => {
+    tokens.push(name);
+    if (verseWords.length && index % 2 === 1) {
+      tokens.push(...verseWords[verse % verseWords.length]);
+      verse += 1;
+    }
+  });
+  if (verseWords.length && people.length === 1) tokens.push(...verseWords[0]);
+  return tokens;
+}
+
 /** Split a ridge where the text would turn upside down, and point every run so letters stand upright. */
 export function uprightRuns(points: Pt[]): Pt[][] {
   if (points.length < 2) return [];
@@ -53,31 +73,38 @@ export type PackedRun = { points: Pt[]; text: string };
  * Fill each upright run with whole words. A word that does not fit is left for a later run
  * instead of being cut. The uncovered tail of a ridge is drawn as ink by the caller.
  */
-export function packRuns(runs: Pt[][], words: string[], measure: (word: string) => number, space: number): PackedRun[] {
+export function packRuns(
+  runs: Pt[][],
+  words: string[],
+  measure: (word: string) => number,
+  space: number,
+  cursor: { i: number } = { i: 0 },
+  ceiling?: number,
+): PackedRun[] {
   if (!words.length) return runs.map((points) => ({ points, text: "" }));
-  let cursor = 0;
+  const longest = ceiling ?? runs.reduce((max, points) => Math.max(max, pathLength(points)), 0);
   const packed: PackedRun[] = [];
   for (const points of runs) {
     const length = pathLength(points);
     let used = 2;
     const chosen: string[] = [];
     let guard = 0;
-    while (guard++ < 500) {
+    while (guard++ < words.length + 2) {
       const remain = length - used - 1.5;
-      let pick = -1;
-      const window = Math.min(words.length, 10);
-      for (let k = 0; k < window; k++) {
-        const index = (cursor + k) % words.length;
-        const need = (chosen.length ? space : 0) + measure(words[index]);
-        if (need <= remain) {
-          pick = index;
-          break;
-        }
+      const word = words[cursor.i % words.length];
+      const need = (chosen.length ? space : 0) + measure(word);
+      if (need <= remain) {
+        used += need;
+        chosen.push(word);
+        cursor.i += 1;
+        continue;
       }
-      if (pick < 0) break;
-      used += (chosen.length ? space : 0) + measure(words[pick]);
-      chosen.push(words[pick]);
-      cursor = (pick + 1) % words.length;
+      // A token longer than this run waits for a longer one. Drop it only when no run can hold it.
+      if (!chosen.length && measure(word) > length - 3 && measure(word) > longest - 3) {
+        cursor.i += 1;
+        continue;
+      }
+      break;
     }
     packed.push({ points, text: chosen.join(" ") });
   }
@@ -86,8 +113,88 @@ export function packRuns(runs: Pt[][], words: string[], measure: (word: string) 
 
 export function estimateWordWidth(word: string, fontSize: number, charRatio: number, tracking: number) {
   if (!word) return 0;
-  const advance = fontSize * charRatio + tracking;
-  return Math.max(fontSize * 0.4, word.length * advance - tracking);
+  let width = 0;
+  let letters = 0;
+  for (const ch of word) {
+    if (ch === " ") {
+      width += fontSize * 0.22;
+      continue;
+    }
+    width += fontSize * charRatio + tracking;
+    letters += 1;
+  }
+  if (letters > 1) width -= tracking;
+  return Math.max(fontSize * 0.4, width);
+}
+
+export type PlaqueLine = { text: string; fontSize: number; emphasis: boolean };
+
+export type Plaque = {
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
+  lines: PlaqueLine[];
+  baselines: number[];
+};
+
+/** A paper plaque in the core so the dedications stay readable without moving the surrounding ridges. */
+export function plaqueFor(ridges: { points: Pt[] }[], style: { centerName?: string; centerDetail?: string; secondaryName?: string; secondaryDetail?: string }, period: number): Plaque | null {
+  const lines: PlaqueLine[] = [];
+  const primary = style.centerName?.trim();
+  const primaryDetail = style.centerDetail?.trim();
+  const secondary = style.secondaryName?.trim();
+  const secondaryDetail = style.secondaryDetail?.trim();
+  if (primary) lines.push({ text: primary, fontSize: period * 2.55, emphasis: true });
+  if (primaryDetail) lines.push({ text: primaryDetail, fontSize: period * 1.35, emphasis: false });
+  if (secondary) lines.push({ text: secondary, fontSize: period * 1.9, emphasis: true });
+  if (secondaryDetail) lines.push({ text: secondaryDetail, fontSize: period * 1.15, emphasis: false });
+  if (!lines.length) return null;
+
+  let cx = 0;
+  let cy = 0;
+  let count = 0;
+  for (const ridge of ridges) {
+    for (const point of ridge.points) {
+      cx += point.x;
+      cy += point.y;
+      count += 1;
+    }
+  }
+  if (!count) return null;
+  cx /= count;
+  cy /= count;
+
+  const charRatio = 0.72;
+  let maxW = 0;
+  let block = 0;
+  lines.forEach((line, index) => {
+    maxW = Math.max(maxW, estimateWordWidth(line.text, line.fontSize, charRatio, 0));
+    block += line.fontSize * 1.05;
+    if (index === 1 && lines.length > 2) block += period * 0.85;
+    else if (index < lines.length - 1) block += period * 0.28;
+  });
+  const rx = maxW / 2 + period * 1.15;
+  const ry = block / 2 + period * 0.95;
+  const baselines: number[] = [];
+  let y = cy - block / 2;
+  lines.forEach((line, index) => {
+    baselines.push(y + line.fontSize * 0.78);
+    y += line.fontSize * 1.05;
+    if (index === 1 && lines.length > 2) y += period * 0.85;
+    else if (index < lines.length - 1) y += period * 0.28;
+  });
+  return { cx, cy, rx, ry, lines, baselines };
+}
+
+export function inPlaque(x: number, y: number, plaque: Plaque, pad = 0) {
+  const nx = (x - plaque.cx) / (plaque.rx + pad);
+  const ny = (y - plaque.cy) / (plaque.ry + pad);
+  return nx * nx + ny * ny < 1;
+}
+
+export function ellipsePath(cx: number, cy: number, rx: number, ry: number) {
+  return `M ${(cx - rx).toFixed(2)} ${cy.toFixed(2)} A ${rx.toFixed(2)} ${ry.toFixed(2)} 0 1 0 ${(cx + rx).toFixed(2)} ${cy.toFixed(2)} A ${rx.toFixed(2)} ${ry.toFixed(2)} 0 1 0 ${(cx - rx).toFixed(2)} ${cy.toFixed(2)} Z`;
 }
 
 export type PlacedGlyph = { text: string; distance: number; advance: number };

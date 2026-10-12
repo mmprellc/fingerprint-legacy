@@ -78,11 +78,34 @@ function sanitizePrints(value: PreviewPrint[] | undefined): PreviewPrint[] {
 }
 
 function sanitizeStyle(style: PrintStyle | undefined): PrintStyle {
+  const names = cleanList(style?.names, 80, 80);
+  const scriptures = cleanList(style?.scriptures, 12, 500);
   return {
     font: style?.font === "cormorant" ? "cormorant" : "baskerville",
     preset: String(style?.preset || "charcoal").slice(0, 40),
     textScale: Math.min(1.4, Math.max(0.7, Number(style?.textScale) || 1)),
-    title: String(style?.title || "").slice(0, 80),
-    script: String(style?.script || "").slice(0, 80),
+    title: String(style?.title || "").slice(0, 120),
+    script: String(style?.script || "").slice(0, 120),
+    ...(cleanLine(style?.footer, 160) ? { footer: cleanLine(style?.footer, 160) } : {}),
+    ...(cleanLine(style?.centerName, 80) ? { centerName: cleanLine(style?.centerName, 80) } : {}),
+    ...(cleanLine(style?.centerDetail, 80) ? { centerDetail: cleanLine(style?.centerDetail, 80) } : {}),
+    ...(cleanLine(style?.secondaryName, 80) ? { secondaryName: cleanLine(style?.secondaryName, 80) } : {}),
+    ...(cleanLine(style?.secondaryDetail, 80) ? { secondaryDetail: cleanLine(style?.secondaryDetail, 80) } : {}),
+    ...(names ? { names } : {}),
+    ...(scriptures ? { scriptures } : {}),
   };
+}
+
+function cleanLine(value: string | undefined, max: number) {
+  const text = String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
+  return text;
+}
+
+function cleanList(value: string[] | undefined, maxItems: number, maxLen: number) {
+  if (!Array.isArray(value)) return undefined;
+  const items = value
+    .map((item) => String(item).replace(/[ \t]+/g, " ").trim().slice(0, maxLen))
+    .filter(Boolean)
+    .slice(0, maxItems);
+  return items.length ? items : undefined;
 }

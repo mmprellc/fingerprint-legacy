@@ -17,7 +17,7 @@ export default async function GalleryPiecePage({ params }: { params: Promise<{ s
   const piece = galleryBySlug(slug);
   if (!piece) notFound();
   const occasion = occasionBySlug(piece.occasion);
-  const href = `/studio?occasion=${piece.occasion}${piece.couple ? "&couple=1" : "&sample=1"}`;
+  const href = piece.studio ?? `/studio?occasion=${piece.occasion}${piece.couple ? "&couple=1" : "&sample=1"}`;
   return (
     <article className="page">
       <p className="kicker">Gallery</p>
@@ -26,6 +26,18 @@ export default async function GalleryPiecePage({ params }: { params: Promise<{ s
         <img src={piece.image} alt={piece.title} />
         <div className="stack">
           <p className="lede">{piece.caption}</p>
+          {piece.compare ? (
+            <figure>
+              <img src={piece.compare} alt="The original sample fingerprint beside this word-filled portrait" />
+              <figcaption className="note">The sample print, and the same ridges carrying the names and verses.</figcaption>
+            </figure>
+          ) : null}
+          {piece.closeup ? (
+            <figure>
+              <img src={piece.closeup} alt="A close view of the names and scripture along the ridges" />
+              <figcaption className="note">Closer in, the ridges read as names and scripture.</figcaption>
+            </figure>
+          ) : null}
           {piece.slug === "memorial" ? (
             <figure>
               <img src="/samples/side-by-side.png" alt="The original sample fingerprint beside the word-filled portrait" />
@@ -35,6 +47,7 @@ export default async function GalleryPiecePage({ params }: { params: Promise<{ s
           <p>{occasion?.lede}</p>
           <p>
             <Link className="btn-gold" href={href}>Make a piece like this</Link>{" "}
+            {piece.pdf ? <a className="btn-ghost" href={piece.pdf}>Download the PDF</a> : null}{" "}
             <Link className="btn-ghost" href={`/occasions/${piece.occasion}`}>About this occasion</Link>
           </p>
           <p><Link href="/gallery">Back to the gallery</Link></p>
