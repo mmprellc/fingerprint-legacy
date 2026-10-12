@@ -41,6 +41,7 @@ function verseWords(verse: string) {
  * the reference, and may continue on the next ridge segments in this same order.
  * A name never lands in the middle of a verse, and a verse never starts mid-phrase.
  * Names sit between whole verses, or on their own ridges, with a divider between them.
+ * They take turns. A short ridge uses the next name that is not already ahead, or a divider.
  */
 export function packBodyRuns(
   runs: Pt[][],
@@ -58,15 +59,19 @@ export function packBodyRuns(
   let verseAt = verseCursor.i;
   let verseWord = 0;
   let namesSinceVerse = 0;
-  let namesPlaced = 0;
   let owed = versesAt.length ? versesAt.length - (verseAt % versesAt.length) : 0;
+  const slotCount = names.map(() => 0);
 
   const cannotFitFrom = (token: string, from: number) => {
     for (let index = from; index < runs.length; index++) {
-      if (pathLength(runs[index]) - measure(token, index) >= 3) return false;
+      // Same margin place() uses on an empty run (2px lead + 1.5px tail).
+      if (measure(token, index) <= pathLength(runs[index]) - 3.5) return false;
     }
     return true;
   };
+
+  const namesRemainFrom = (from: number) =>
+    names.some((name, index) => slotCount[index] === 0 && !cannotFitFrom(name, from));
 
   const verseFits = (start: number, words: string[], used0: number, count0: number) => {
     let wi = 0;
@@ -205,7 +210,7 @@ export function packBodyRuns(
       const words = versesAt.length ? versesAt[verseAt % versesAt.length] : null;
       const fitsHere = words ? verseFits(runIndex, words, used, parts.length) : false;
       const mustStart = Boolean(words && owed > 0 && fitsHere && !laterHolds(runIndex + 1, owed));
-      const namesRemain = names.length > 0 && namesPlaced < names.length;
+      const namesRemain = namesRemainFrom(runIndex);
       const wantVerse = Boolean(
         words && fitsHere && (mustStart || names.length === 0 || (namesSinceVerse >= namesPerGap && !namesRemain)),
       );
@@ -216,25 +221,54 @@ export function packBodyRuns(
       }
 
       if (!names.length) break;
-      const name = names[nameCursor.i % names.length];
-      if (cannotFitFrom(name, runIndex)) {
+      const floor = Math.min(...slotCount);
+      const next = nameCursor.i % names.length;
+      // This listing was already placed out of order on a shorter ridge. Keep the round-robin moving.
+      if (slotCount[next] > floor) {
+        nameCursor.i += 1;
+        continue;
+      }
+      if (cannotFitFrom(names[next], runIndex)) {
         nameCursor.i += 1;
         if (nameCursor.i > names.length * (runs.length + 2)) break;
         continue;
       }
-      const tokens = parts.length ? [RIDGE_DIVIDER, name] : [name];
-      if (tokensFit(tokens)) {
+
+      const take = (idx: number) => {
+        const tokens = parts.length ? [RIDGE_DIVIDER, names[idx]] : [names[idx]];
+        if (!tokensFit(tokens)) return false;
         for (const token of tokens) place(token);
-        nameCursor.i += 1;
+        slotCount[idx] += 1;
         namesSinceVerse += 1;
-        namesPlaced += 1;
-        continue;
+        if (idx === nameCursor.i % names.length) nameCursor.i += 1;
+        return true;
+      };
+
+      if (take(next)) continue;
+      // A short ridge may take another name that is tied for fewest placements, so the short
+      // ones rotate. A name that is already ahead waits, instead of becoming the filler.
+      let filled = false;
+      for (let dist = 1; dist < names.length; dist++) {
+        const idx = (next + dist) % names.length;
+        if (slotCount[idx] !== floor) continue;
+        if (take(idx)) {
+          filled = true;
+          break;
+        }
       }
-      // Too short for the next name. The verse can still use it, instead of leaving the ridge blank.
-      if (words && fitsHere) {
+      if (filled) continue;
+      if (words && fitsHere && (!namesRemain || mustStart)) {
         if (startVerse(words) === "more") continue;
       }
       break;
+    }
+    // No fair name fits this segment, and the verse does not own it. A divider fills it
+    // so one short name is not stamped on every small ridge.
+    if (!parts.length && verseWord === 0) {
+      let dots = 0;
+      while (dots++ < 40 && place(RIDGE_DIVIDER)) {
+        /* keep the short ridge from going blank */
+      }
     }
     packed.push({ points, text: parts.join(" ") });
   }

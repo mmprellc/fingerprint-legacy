@@ -2,6 +2,7 @@ import path from "node:path";
 import opentype from "opentype.js";
 import { PDFDocument } from "pdf-lib";
 import sharp from "sharp";
+import { nameSpread } from "./audit";
 import { edgeTypeScale, fontSizeFor, placeGlyphs, planPortrait, poseAt, rimWeights, roleScale } from "./lettering";
 import { fontById, mapPrint, presetById } from "./preview";
 import type { PreviewPrint } from "./preview";
@@ -184,6 +185,12 @@ export async function renderArtwork(request: RenderRequest) {
       sourceSize * roleScale("body") * 0.16,
       bodyScale,
     );
+    const bodyLines = planned.flatMap((runs) => runs.filter((run) => run.role === "body" && run.text).map((run) => run.text));
+    const listed = request.style.names ?? [];
+    if (listed.length) {
+      const spread = nameSpread(bodyLines, listed);
+      if (!spread.passed) throw new Error(spread.detail);
+    }
     const body: string[] = [];
     planned.forEach((runs, ridgeIndex) => {
       const rim = rims[ridgeIndex] ?? 0;

@@ -98,6 +98,8 @@ export function auditLayout(svg: string, style: PrintStyle, period: number): Che
       passed: missing.length === 0,
       detail: missing.length ? `Missing ${missing.slice(0, 4).join(", ")}.` : `All ${seen.size} names are on the ridges.`,
     });
+    const spread = nameSpread(bodyRunTexts(svg), names);
+    checks.push(spread);
   }
   return checks;
 }
@@ -170,6 +172,49 @@ function versesInOrder(runs: string[], scriptures: string[], names: string[]) {
   const outOfOrder = finished.findIndex((at, order) => at !== order % verses.length);
   if (outOfOrder >= 0) return { ok: false, detail: "The verses are out of order." };
   return { ok: true, detail: `${finished.length} complete verses, in order.` };
+}
+
+/**
+ * Each listed name should show up about as often as the others, counting a repeated
+ * listing (Jacob twice) as two shares. One extra pass is allowed so a round-robin
+ * that has started the next cycle still passes. A short name used as filler does not.
+ */
+export function nameSpread(runs: string[], listed: string[]): Check {
+  const shares = new Map<string, number>();
+  for (const name of listed) shares.set(name, (shares.get(name) ?? 0) + 1);
+  const blob = runs.join("\n");
+  const rates: number[] = [];
+  const foundOf = new Map<string, number>();
+  for (const [name, times] of shares) {
+    const found = countOf(blob, name);
+    foundOf.set(name, found);
+    rates.push(found / times);
+  }
+  rates.sort((a, b) => a - b);
+  const mid = Math.floor(rates.length / 2);
+  const median = rates.length === 0 ? 0 : rates.length % 2 === 1 ? rates[mid] : (rates[mid - 1] + rates[mid]) / 2;
+  const limit = Math.max(median * 1.5, median + 1);
+  let worst: { name: string; found: number; rate: number } | null = null;
+  for (const [name, times] of shares) {
+    const found = foundOf.get(name) ?? 0;
+    const rate = found / times;
+    if (rate > limit + 1e-6 && (!worst || rate > worst.rate)) worst = { name, found, rate };
+  }
+  if (worst) {
+    const typical = median < 10 ? median.toFixed(1) : Math.round(median).toString();
+    return {
+      id: "name-balance",
+      label: "Names stay even",
+      passed: false,
+      detail: `${worst.name} appears ${worst.found} times, more than 1.5× the median (${typical} per listing).`,
+    };
+  }
+  return {
+    id: "name-balance",
+    label: "Names stay even",
+    passed: true,
+    detail: `No name exceeds 1.5× the median (${median.toFixed(1)} per listing).`,
+  };
 }
 
 export function layoutPassed(checks: Check[]) {
