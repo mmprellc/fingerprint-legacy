@@ -394,10 +394,10 @@ export function StudioClient({
 
         <h2>Their words</h2>
         <label className="field"><span>Title above the portrait</span><input type="text" value={style.title} onChange={(event) => setStyle({ ...style, title: event.target.value })} /></label>
-        <label className="field"><span>Center dedication</span><input type="text" value={style.centerName ?? ""} aria-label="Center name" onChange={(event) => setStyle({ ...style, centerName: event.target.value })} /></label>
-        <label className="field"><span>Under the center name</span><input type="text" value={style.centerDetail ?? ""} aria-label="Center date or detail" onChange={(event) => setStyle({ ...style, centerDetail: event.target.value })} /></label>
-        <label className="field"><span>Secondary dedication</span><input type="text" value={style.secondaryName ?? ""} aria-label="Secondary name" onChange={(event) => setStyle({ ...style, secondaryName: event.target.value })} /></label>
-        <label className="field"><span>Under the secondary name</span><input type="text" value={style.secondaryDetail ?? ""} aria-label="Secondary date or detail" onChange={(event) => setStyle({ ...style, secondaryDetail: event.target.value })} /></label>
+        <label className="field"><span>Center dedication, on the innermost ridges</span><input type="text" value={style.centerName ?? ""} aria-label="Center name" onChange={(event) => setStyle({ ...style, centerName: event.target.value })} /></label>
+        <label className="field"><span>With the center dedication</span><input type="text" value={style.centerDetail ?? ""} aria-label="Center date or detail" onChange={(event) => setStyle({ ...style, centerDetail: event.target.value })} /></label>
+        <label className="field"><span>Secondary dedication, on the next ridges</span><input type="text" value={style.secondaryName ?? ""} aria-label="Secondary name" onChange={(event) => setStyle({ ...style, secondaryName: event.target.value })} /></label>
+        <label className="field"><span>With the secondary dedication</span><input type="text" value={style.secondaryDetail ?? ""} aria-label="Secondary date or detail" onChange={(event) => setStyle({ ...style, secondaryDetail: event.target.value })} /></label>
         <label className="field">
           <span>Names along the ridges, one per line</span>
           <textarea className="names" value={(style.names ?? []).join("\n")} onChange={(event) => setStyle({ ...style, names: event.target.value.split("\n") })} />
@@ -406,7 +406,7 @@ export function StudioClient({
           <span>Scriptures, one verse per line</span>
           <textarea className="verses" value={(style.scriptures ?? []).join("\n")} onChange={(event) => setStyle({ ...style, scriptures: event.target.value.split("\n") })} />
         </label>
-        <p className="note">Names stay whole. Verses repeat between them, in the order you list. The ridges themselves are not moved.</p>
+        <p className="note">Every ridge is text. The center dedication follows the innermost loop, a little larger. The secondary dedication follows the next ridges. Names stay whole, and the verses repeat between them.</p>
         <label className="field"><span>Line under the portrait</span><input type="text" value={style.footer ?? ""} onChange={(event) => setStyle({ ...style, footer: event.target.value })} /></label>
         <label className="field"><span>Script line, if the footer is empty</span><input type="text" value={style.script} onChange={(event) => setStyle({ ...style, script: event.target.value })} /></label>
         <details open={linesOpen} onToggle={(event) => setLinesOpen(event.currentTarget.open)}>

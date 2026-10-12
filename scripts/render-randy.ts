@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
 import { extractFromGray, rgbaToGray } from "../lib/fingerprint/engine";
-import { plaqueFor } from "../lib/fingerprint/lettering";
+import { printCore } from "../lib/fingerprint/lettering";
 import { buildPreviewSvg, mapPrint } from "../lib/fingerprint/preview";
 import { renderArtwork } from "../lib/fingerprint/render-print";
 import { RANDY_CZYZ_NAMES, RANDY_CZYZ_SCRIPTURES, randyCzyzStyle } from "../lib/pieces";
@@ -53,8 +53,11 @@ async function main() {
   for (const name of new Set(RANDY_CZYZ_NAMES)) assertIncludes(preview.svg, name, "name");
   if (assertIncludes(preview.svg, "Jacob Czyz", "Jacob") < 2) throw new Error("Jacob Czyz was not repeated");
   if (assertIncludes(preview.svg, "Martin Pierce", "Martin") < 2) throw new Error("Martin Pierce was not repeated");
-  for (const phrase of ["Isaiah 41:10", "Psalm 73:26", "Psalm 119:105", "6:24–26", "4.20.1955", "10.17.1955"]) {
+  for (const phrase of ["Isaiah", "41:10", "73:26", "119:105", "6:24–26", "Numbers", "4.20.1955", "10.17.1955", "Maryanne Czyz", "righteous", "lamp"]) {
     assertIncludes(preview.svg, phrase, "phrase");
+  }
+  if (preview.svg.includes("plaque-name") || preview.svg.includes("ridgekeep")) {
+    throw new Error("The dedications are still a separate block instead of ridges");
   }
 
   const out = path.join(process.cwd(), "public/pieces");
@@ -84,12 +87,11 @@ async function main() {
     matchSource: true,
   });
 
-  const plaque = plaqueFor(mapPrint(print), randyCzyzStyle, result.period);
-  if (!plaque) throw new Error("Core plaque was not placed");
-  const cropW = Math.min(result.width, Math.round(plaque.rx * 2 + result.period * 14));
-  const cropH = Math.min(result.height, Math.round(plaque.ry * 2 + result.period * 18));
-  const left = Math.max(0, Math.min(result.width - cropW, Math.round(plaque.cx - cropW / 2)));
-  const top = Math.max(0, Math.min(result.height - cropH, Math.round(plaque.cy - cropH / 2)));
+  const core = printCore(mapPrint(print), result.period);
+  const cropW = Math.min(result.width, Math.round(result.period * 28));
+  const cropH = Math.min(result.height, Math.round(result.period * 22));
+  const left = Math.max(0, Math.min(result.width - cropW, Math.round(core.x - cropW / 2)));
+  const top = Math.max(0, Math.min(result.height - cropH, Math.round(core.y - cropH / 2)));
   const close = await sharp(matched.png)
     .extract({ left, top, width: cropW, height: cropH })
     .resize({ width: 1600, kernel: "lanczos3" })
@@ -116,13 +118,23 @@ async function main() {
     .png()
     .toFile(path.join(out, "randy-czyz-compare.png"));
 
+  const fadedRaw = await sharp(matched.png).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const pixels = Buffer.from(fadedRaw.data);
+  for (let i = 0; i < pixels.length; i += 4) {
+    const paper = pixels[i] > 236 && pixels[i + 1] > 230 && pixels[i + 2] > 220;
+    pixels[i + 3] = paper ? 0 : 128;
+  }
+  const faded = await sharp(pixels, { raw: { width: fadedRaw.info.width, height: fadedRaw.info.height, channels: 4 } }).png().toBuffer();
+  await sharp(photo).composite([{ input: faded, blend: "over" }]).png().toFile(path.join(out, "randy-czyz-overlay.png"));
+
   const artifacts = "/opt/cursor/artifacts";
   fs.mkdirSync(artifacts, { recursive: true });
-  fs.copyFileSync(path.join(out, "randy-czyz.png"), path.join(artifacts, "randy_czyz_ink_artwork.png"));
-  fs.copyFileSync(path.join(out, "randy-czyz-closeup.png"), path.join(artifacts, "randy_czyz_ink_closeup.png"));
-  fs.copyFileSync(path.join(out, "randy-czyz-compare.png"), path.join(artifacts, "randy_czyz_ink_side_by_side.png"));
-  fs.copyFileSync(path.join(out, "randy-czyz.pdf"), path.join(artifacts, "randy_czyz_ink.pdf"));
-  console.log(`artwork ${full.width}x${full.height} plaque ${plaque.cx.toFixed(0)},${plaque.cy.toFixed(0)} crop ${left},${top} ${cropW}x${cropH}`);
+  fs.copyFileSync(path.join(out, "randy-czyz.png"), path.join(artifacts, "randy_czyz_words_artwork.png"));
+  fs.copyFileSync(path.join(out, "randy-czyz-closeup.png"), path.join(artifacts, "randy_czyz_words_closeup.png"));
+  fs.copyFileSync(path.join(out, "randy-czyz-compare.png"), path.join(artifacts, "randy_czyz_words_side_by_side.png"));
+  fs.copyFileSync(path.join(out, "randy-czyz-overlay.png"), path.join(artifacts, "randy_czyz_words_overlay.png"));
+  fs.copyFileSync(path.join(out, "randy-czyz.pdf"), path.join(artifacts, "randy_czyz_words.pdf"));
+  console.log(`artwork ${full.width}x${full.height} core ${core.x.toFixed(0)},${core.y.toFixed(0)} crop ${left},${top} ${cropW}x${cropH}`);
 }
 
 function slim(ridge: Ridge) {

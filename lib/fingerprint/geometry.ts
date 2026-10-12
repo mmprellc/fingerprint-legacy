@@ -251,7 +251,7 @@ export function joinRidges(ridges: Ridge[], period: number): Ridge[] {
 
   const out: Ridge[] = [];
   for (const item of items) {
-    const ridge = finishRidge(item.points, item.closed, Math.max(8, period * 2));
+    const ridge = finishRidge(item.points, item.closed, Math.max(8, period * 1.3));
     if (ridge) out.push(ridge);
   }
   out.sort((a, b) => b.length - a.length);

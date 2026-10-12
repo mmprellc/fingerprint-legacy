@@ -1,11 +1,14 @@
 import { pathLength, pointAtLength } from "./geometry";
-import type { Pt } from "./types";
+import type { PrintStyle, Pt } from "./types";
 
 /** Ink thickness as a fraction of the ridge period. Valleys stay open at this width. */
 export const RIDGE_WIDTH_RATIO = 0.42;
 
-/** How much of the ink width is drawn as a bridge under and between letters. */
-export const UNDERSTROKE = 0.62;
+/**
+ * No separate ink bridge. The glyphs are the ridge; a heavy stroke under them
+ * turns the names into specks on a line.
+ */
+export const UNDERSTROKE = 0;
 
 const CAP_RATIO = 0.69;
 
@@ -14,12 +17,69 @@ export function ridgeWidth(period: number) {
 }
 
 export function fontSizeFor(period: number, textScale = 1) {
-  return Math.max(6.5, (ridgeWidth(period) / CAP_RATIO) * (textScale || 1));
+  // Cap height is a bit over half the ridge spacing, so a line of type reads as
+  // that ridge up close and still clears the next one.
+  const cap = Math.max(8, period * 0.62);
+  return (cap / CAP_RATIO) * (textScale || 1);
 }
 
 export function wordsOf(lines: string[]) {
   const words = lines.flatMap((line) => line.split(/\s+/).map((word) => word.trim()).filter((word) => word.length > 1 || /\d/.test(word)));
   return words.length ? words : ["Always"];
+}
+
+/**
+ * One name leads a ridge when it fits, then scripture fills the rest.
+ * Names stay whole and cycle in order, so a later name is not buried behind a verse.
+ * Verses repeat, in order, wherever a ridge still has room.
+ */
+export function packBodyRuns(
+  runs: Pt[][],
+  names: string[],
+  verses: string[],
+  measure: (word: string) => number,
+  space: number,
+  nameCursor: { i: number },
+  verseCursor: { i: number },
+  ceiling: number,
+): PackedRun[] {
+  const packed: PackedRun[] = [];
+  for (const points of runs) {
+    const length = pathLength(points);
+    let used = 2;
+    const chosen: string[] = [];
+    const place = (word: string) => {
+      const need = (chosen.length ? space : 0) + measure(word);
+      if (need > length - used - 1.5) return false;
+      chosen.push(word);
+      used += need;
+      return true;
+    };
+    if (names.length) {
+      const name = names[nameCursor.i % names.length];
+      if (measure(name) > ceiling - 3) nameCursor.i += 1;
+      else if (place(name)) nameCursor.i += 1;
+    }
+    const filler = verses.length ? verses : names;
+    const cursor = verses.length ? verseCursor : nameCursor;
+    if (filler.length) {
+      let guard = 0;
+      while (guard++ < filler.length + 2) {
+        const word = filler[cursor.i % filler.length];
+        if (!place(word)) break;
+        cursor.i += 1;
+      }
+    }
+    packed.push({ points, text: chosen.join(" ") });
+  }
+  return packed;
+}
+
+export function bodySources(names: string[] | undefined, scriptures: string[] | undefined, lines: string[]) {
+  const people = (names ?? []).map((name) => name.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const verses = (scriptures ?? []).flatMap((verse) => verse.replace(/\s+/g, " ").trim().split(" ").filter(Boolean));
+  if (!people.length && !verses.length) return { names: [] as string[], verses: wordsOf(lines) };
+  return { names: people, verses };
 }
 
 /** Names stay whole. Verses are woven between them, in order, and the list repeats. */
@@ -137,6 +197,92 @@ export type Plaque = {
   lines: PlaqueLine[];
   baselines: number[];
 };
+
+export type RidgeRole = "core" | "secondary" | "body";
+
+function medianDistance(points: Pt[], origin: Pt) {
+  if (!points.length) return Infinity;
+  const dists = points.map((point) => Math.hypot(point.x - origin.x, point.y - origin.y));
+  dists.sort((a, b) => a - b);
+  return dists[Math.floor(dists.length / 2)];
+}
+
+/** The loop center, taken from the long ridges so a short kink cannot pull it aside. */
+export function printCore(ridges: { points: Pt[] }[], period: number): Pt {
+  const long = ridges.filter((ridge) => pathLength(ridge.points) >= period * 6);
+  const source = long.length >= 4 ? long : ridges;
+  let cx = 0;
+  let cy = 0;
+  let n = 0;
+  for (const ridge of source) {
+    for (const point of ridge.points) {
+      cx += point.x;
+      cy += point.y;
+      n++;
+    }
+  }
+  if (!n) return { x: 0, y: 0 };
+  cx /= n;
+  cy /= n;
+  const scored: { x: number; y: number; score: number }[] = [];
+  for (const ridge of source) {
+    const pts = ridge.points;
+    for (let i = 2; i < pts.length - 2; i += 2) {
+      const a = pts[i - 2];
+      const b = pts[i];
+      const c = pts[i + 2];
+      const dist = Math.hypot(b.x - cx, b.y - cy);
+      if (dist > period * 7) continue;
+      const ang1 = Math.atan2(b.y - a.y, b.x - a.x);
+      const ang2 = Math.atan2(c.y - b.y, c.x - b.x);
+      const turn = Math.abs(Math.atan2(Math.sin(ang2 - ang1), Math.cos(ang2 - ang1)));
+      scored.push({ x: b.x, y: b.y, score: turn / (period * 0.4 + dist) });
+    }
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const take = scored.slice(0, Math.max(10, Math.floor(scored.length * 0.12)));
+  if (!take.length) return { x: cx, y: cy };
+  let x = 0;
+  let y = 0;
+  for (const point of take) {
+    x += point.x;
+    y += point.y;
+  }
+  return { x: x / take.length, y: y / take.length };
+}
+
+/**
+ * Innermost ridges carry the center dedication. The next ring carries the
+ * secondary dedication. Everything farther out carries the names and verses.
+ */
+export function classifyRidges(ridges: { points: Pt[] }[], period: number): RidgeRole[] {
+  const core = printCore(ridges, period);
+  const roles: RidgeRole[] = ridges.map(() => "body");
+  const ranked = ridges
+    .map((ridge, index) => ({
+      index,
+      length: pathLength(ridge.points),
+      distance: medianDistance(ridge.points, core),
+    }))
+    .filter((item) => item.length >= period * 6)
+    .sort((a, b) => a.distance - b.distance || b.length - a.length);
+  const coreCount = Math.min(4, ranked.length);
+  const secondaryCount = Math.min(5, Math.max(0, ranked.length - coreCount));
+  for (let i = 0; i < coreCount; i++) roles[ranked[i].index] = "core";
+  for (let i = 0; i < secondaryCount; i++) roles[ranked[coreCount + i].index] = "secondary";
+  return roles;
+}
+
+export function dedicationWords(style: PrintStyle, role: "core" | "secondary") {
+  const pair = role === "core" ? [style.centerName, style.centerDetail] : [style.secondaryName, style.secondaryDetail];
+  return pair.map((line) => (line ?? "").replace(/\s+/g, " ").trim()).filter(Boolean);
+}
+
+export function roleScale(role: RidgeRole) {
+  if (role === "core") return 1.36;
+  if (role === "secondary") return 1.18;
+  return 1;
+}
 
 /** A paper plaque in the core so the dedications stay readable without moving the surrounding ridges. */
 export function plaqueFor(ridges: { points: Pt[] }[], style: { centerName?: string; centerDetail?: string; secondaryName?: string; secondaryDetail?: string }, period: number): Plaque | null {

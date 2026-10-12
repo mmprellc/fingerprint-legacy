@@ -28,8 +28,14 @@ export default async function GalleryPiecePage({ params }: { params: Promise<{ s
           <p className="lede">{piece.caption}</p>
           {piece.compare ? (
             <figure>
-              <img src={piece.compare} alt="The original sample fingerprint beside this word-filled portrait" />
-              <figcaption className="note">The sample print, and the same ridges carrying the names and verses.</figcaption>
+              <img src={piece.compare} alt="The original fingerprint beside this word-filled portrait" />
+              <figcaption className="note">The original print, and the same ridges carrying the names and verses.</figcaption>
+            </figure>
+          ) : null}
+          {piece.overlay ? (
+            <figure>
+              <img src={piece.overlay} alt="The word-filled ridges at half strength over the original print" />
+              <figcaption className="note">The portrait at half strength, laid over the original print.</figcaption>
             </figure>
           ) : null}
           {piece.closeup ? (

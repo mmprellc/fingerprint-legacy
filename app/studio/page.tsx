@@ -20,7 +20,7 @@ export default async function StudioPage({ searchParams }: { searchParams: Promi
       <p className="kicker">Studio</p>
       <h1>Shape the portrait yourself.</h1>
       <p className="lede">The ridges stay faithful to the print. Your words do the inking.</p>
-      {piece ? <p className="note studio-note">The ridges below are read from the print. The names and verses follow those lines.</p> : null}
+      {piece ? <p className="note studio-note">The ridges below are read from the print. The center dedication follows the innermost loop, the next dedication the ridges just outside it, and the names and verses make every other ridge.</p> : null}
       <StudioClient
         initialOccasion={occasion}
         initialPiece={piece}

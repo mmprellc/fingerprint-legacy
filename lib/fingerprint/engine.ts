@@ -1,4 +1,4 @@
-import { finishRidge, joinRidges } from "./geometry";
+import { finishRidge, joinRidges, resamplePath, smoothPath } from "./geometry";
 import type { ExtractDebug, ExtractOptions, ExtractResult, Pt, Ridge } from "./types";
 
 const TARGET_PERIOD = 12;
@@ -321,17 +321,101 @@ function orientationField(src: Float32Array, mask: Uint8Array, w: number, h: num
       scoh[by * bw + bx] = wsum ? hsum / wsum : 0;
     }
   }
+  // Carry a reliable direction into smudged blocks so ridges can cross them.
+  const inside = new Uint8Array(bw * bh);
+  for (let by = 0; by < bh; by++) {
+    for (let bx = 0; bx < bw; bx++) {
+      let n = 0;
+      let on = 0;
+      const y1 = Math.min(h, (by + 1) * block);
+      const x1 = Math.min(w, (bx + 1) * block);
+      for (let y = by * block; y < y1; y += 2) {
+        for (let x = bx * block; x < x1; x += 2) {
+          n++;
+          if (mask[y * w + x]) on++;
+        }
+      }
+      inside[by * bw + bx] = on > n * 0.28 ? 1 : 0;
+    }
+  }
+  const reliable = new Uint8Array(bw * bh);
+  for (let i = 0; i < inside.length; i++) {
+    reliable[i] = inside[i] && scoh[i] > 0.36 && Math.hypot(scos[i], ssin[i]) > 1e-4 ? 1 : 0;
+  }
+  let curC = scos;
+  let curS = ssin;
+  for (let iter = 0; iter < 18; iter++) {
+    const nextC = curC.slice();
+    const nextS = curS.slice();
+    let filled = 0;
+    for (let by = 0; by < bh; by++) {
+      for (let bx = 0; bx < bw; bx++) {
+        const bi = by * bw + bx;
+        if (!inside[bi] || reliable[bi]) continue;
+        let c = 0;
+        let s = 0;
+        let wsum = 0;
+        for (let dy = -2; dy <= 2; dy++) {
+          for (let dx = -2; dx <= 2; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const xx = bx + dx;
+            const yy = by + dy;
+            if (xx < 0 || yy < 0 || xx >= bw || yy >= bh) continue;
+            const j = yy * bw + xx;
+            if (!inside[j]) continue;
+            const mag = Math.hypot(curC[j], curS[j]);
+            if (mag < 1e-5) continue;
+            const weight = (reliable[j] ? 4 : 1) / (1 + dx * dx + dy * dy);
+            c += (curC[j] / mag) * weight;
+            s += (curS[j] / mag) * weight;
+            wsum += weight;
+          }
+        }
+        if (wsum > 0) {
+          nextC[bi] = c / wsum;
+          nextS[bi] = s / wsum;
+          filled++;
+        }
+      }
+    }
+    curC = nextC;
+    curS = nextS;
+    if (!filled) break;
+  }
   const orient = new Float32Array(w * h);
   const coherence = new Float32Array(w * h);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      const bx = clamp(Math.floor(x / block), 0, bw - 1);
-      const by = clamp(Math.floor(y / block), 0, bh - 1);
-      const bi = by * bw + bx;
-      let ang = 0.5 * Math.atan2(ssin[bi], scos[bi]);
+      const gx = clamp(x / block - 0.5, 0, bw - 1.001);
+      const gy = clamp(y / block - 0.5, 0, bh - 1.001);
+      const x0 = Math.floor(gx);
+      const y0 = Math.floor(gy);
+      const tx = gx - x0;
+      const ty = gy - y0;
+      const x1 = Math.min(bw - 1, x0 + 1);
+      const y1 = Math.min(bh - 1, y0 + 1);
+      const i00 = y0 * bw + x0;
+      const i10 = y0 * bw + x1;
+      const i01 = y1 * bw + x0;
+      const i11 = y1 * bw + x1;
+      const c =
+        curC[i00] * (1 - tx) * (1 - ty) +
+        curC[i10] * tx * (1 - ty) +
+        curC[i01] * (1 - tx) * ty +
+        curC[i11] * tx * ty;
+      const s =
+        curS[i00] * (1 - tx) * (1 - ty) +
+        curS[i10] * tx * (1 - ty) +
+        curS[i01] * (1 - tx) * ty +
+        curS[i11] * tx * ty;
+      let ang = 0.5 * Math.atan2(s, c);
       if (ang < 0) ang += Math.PI;
       orient[y * w + x] = ang;
-      coherence[y * w + x] = scoh[bi];
+      coherence[y * w + x] =
+        scoh[i00] * (1 - tx) * (1 - ty) +
+        scoh[i10] * tx * (1 - ty) +
+        scoh[i01] * (1 - tx) * ty +
+        scoh[i11] * tx * ty;
     }
   }
   return { orient, coherence };
@@ -345,39 +429,41 @@ function estimatePeriod(
   w: number,
   h: number,
 ) {
-  const lags: number[] = [];
-  const step = 36;
-  for (let y = 24; y < h - 24; y += step) {
-    for (let x = 24; x < w - 24; x += step) {
+  const gaps: number[] = [];
+  const step = 22;
+  for (let y = 30; y < h - 30; y += step) {
+    for (let x = 30; x < w - 30; x += step) {
       const i = y * w + x;
-      if (!mask[i] || coherence[i] < 0.45) continue;
+      if (!mask[i] || coherence[i] < 0.32) continue;
       const theta = orient[i];
       const nx = -Math.sin(theta);
       const ny = Math.cos(theta);
-      const vals: number[] = [];
-      for (let k = -22; k <= 22; k++) vals.push(sample(src, w, h, x + nx * k, y + ny * k));
-      let mean = 0;
-      for (const v of vals) mean += v;
-      mean /= vals.length;
-      const scores = new Float32Array(28);
-      let bestLag = 10;
-      let best = -Infinity;
-      for (let lag = 5; lag <= 24; lag++) {
-        let c = 0;
-        const n = vals.length - lag;
-        for (let k = 0; k < n; k++) c += (vals[k] - mean) * (vals[k + lag] - mean);
-        scores[lag] = c / Math.max(1, n);
-        if (scores[lag] > best) {
-          best = scores[lag];
-          bestLag = lag;
+      let prev = -999;
+      let rising = false;
+      let last = sample(src, w, h, x - nx * 40, y - ny * 40);
+      for (let k = -39; k <= 40; k++) {
+        const v = sample(src, w, h, x + nx * k, y + ny * k);
+        if (v > last) rising = true;
+        if (rising && v < last && last > 0.12) {
+          const peak = k - 1;
+          if (prev > -100) {
+            const gap = peak - prev;
+            if (gap >= 5 && gap <= 22) gaps.push(gap);
+          }
+          prev = peak;
+          rising = false;
         }
+        last = v;
       }
-      lags.push(bestLag);
     }
   }
-  if (lags.length < 4) return TARGET_PERIOD;
-  lags.sort((a, b) => a - b);
-  return lags[Math.floor(lags.length / 2)];
+  if (gaps.length < 8) return TARGET_PERIOD;
+  gaps.sort((a, b) => a - b);
+  // A thick ridge can register twice. Drop gaps below the lower quartile when they are half the median.
+  const mid = gaps[Math.floor(gaps.length * 0.5)];
+  const kept = gaps.filter((gap) => gap >= mid * 0.62);
+  const use = kept.length >= 8 ? kept : gaps;
+  return use[Math.floor(use.length / 2)];
 }
 
 function gabor(
@@ -1023,17 +1109,371 @@ function pathLengthOf(points: Pt[]) {
   return length;
 }
 
+function fillHoles(bin: Uint8Array, w: number, h: number) {
+  const seen = new Uint8Array(w * h);
+  const q = new Int32Array(w * h);
+  let qe = 0;
+  const push = (i: number) => {
+    if (i < 0 || i >= bin.length || seen[i] || bin[i]) return;
+    seen[i] = 1;
+    q[qe++] = i;
+  };
+  for (let x = 0; x < w; x++) {
+    push(x);
+    push((h - 1) * w + x);
+  }
+  for (let y = 0; y < h; y++) {
+    push(y * w);
+    push(y * w + (w - 1));
+  }
+  let qs = 0;
+  while (qs < qe) {
+    const i = q[qs++];
+    const x = i % w;
+    if (x > 0) push(i - 1);
+    if (x + 1 < w) push(i + 1);
+    if (i >= w) push(i - w);
+    if (i + w < bin.length) push(i + w);
+  }
+  const out = bin.slice();
+  for (let i = 0; i < out.length; i++) {
+    if (!out[i] && !seen[i]) out[i] = 1;
+  }
+  return out;
+}
+
+function largestComponent(bin: Uint8Array, w: number, h: number): Uint8Array {
+  const seen = new Uint8Array(w * h);
+  const q = new Int32Array(w * h);
+  let best: Uint8Array | null = null;
+  let bestN = 0;
+  for (let start = 0; start < bin.length; start++) {
+    if (!bin[start] || seen[start]) continue;
+    let qs = 0;
+    let qe = 0;
+    q[qe++] = start;
+    seen[start] = 1;
+    const cells: number[] = [];
+    while (qs < qe) {
+      const i = q[qs++];
+      cells.push(i);
+      const x = i % w;
+      if (x > 0 && bin[i - 1] && !seen[i - 1]) {
+        seen[i - 1] = 1;
+        q[qe++] = i - 1;
+      }
+      if (x + 1 < w && bin[i + 1] && !seen[i + 1]) {
+        seen[i + 1] = 1;
+        q[qe++] = i + 1;
+      }
+      if (i >= w && bin[i - w] && !seen[i - w]) {
+        seen[i - w] = 1;
+        q[qe++] = i - w;
+      }
+      if (i + w < bin.length && bin[i + w] && !seen[i + w]) {
+        seen[i + w] = 1;
+        q[qe++] = i + w;
+      }
+    }
+    if (cells.length > bestN) {
+      bestN = cells.length;
+      const mask = new Uint8Array(w * h);
+      for (const i of cells) mask[i] = 1;
+      best = mask;
+    }
+  }
+  return best ?? new Uint8Array(bin);
+}
+
+/** Close small gaps, fill the interior, and keep the print silhouette. */
+function solidifyMask(mask: Uint8Array, w: number, h: number) {
+  let solid: Uint8Array = dilate(mask, w, h, 4);
+  solid = erode(solid, w, h, 3);
+  solid = fillHoles(solid, w, h);
+  solid = largestComponent(solid, w, h);
+  solid = erode(solid, w, h, 2);
+  return solid;
+}
+
+class SepGrid {
+  private readonly cell: number;
+  private readonly buckets = new Map<string, Pt[]>();
+
+  constructor(cell: number) {
+    this.cell = Math.max(2, cell);
+  }
+
+  add(point: Pt) {
+    const key = `${Math.floor(point.x / this.cell)},${Math.floor(point.y / this.cell)}`;
+    const bucket = this.buckets.get(key);
+    if (bucket) bucket.push(point);
+    else this.buckets.set(key, [point]);
+  }
+
+  nearest(x: number, y: number, own?: Pt[], ignoreTail = 0) {
+    return this.nearestPoint(x, y, own, ignoreTail)?.d ?? Infinity;
+  }
+
+  nearestPoint(x: number, y: number, own?: Pt[], ignoreTail = 0) {
+    const gx = Math.floor(x / this.cell);
+    const gy = Math.floor(y / this.cell);
+    let best = Infinity;
+    let at: Pt | null = null;
+    for (let dy = -3; dy <= 3; dy++) {
+      for (let dx = -3; dx <= 3; dx++) {
+        const bucket = this.buckets.get(`${gx + dx},${gy + dy}`);
+        if (!bucket) continue;
+        for (const point of bucket) {
+          const d = Math.hypot(point.x - x, point.y - y);
+          if (d < best) {
+            best = d;
+            at = point;
+          }
+        }
+      }
+    }
+    if (own && own.length > ignoreTail) {
+      const stop = own.length - ignoreTail;
+      for (let i = 0; i < stop; i += 2) {
+        const d = Math.hypot(own[i].x - x, own[i].y - y);
+        if (d < best) {
+          best = d;
+          at = own[i];
+        }
+      }
+    }
+    return at ? { d: best, x: at.x, y: at.y } : null;
+  }
+}
+
+/**
+ * Draw one continuous ridge per measured spacing by following the orientation
+ * field, and pull each step onto the enhanced ridge when the ink is clear.
+ */
+function streamlineRidges(
+  enhanced: Float32Array,
+  orient: Float32Array,
+  mask: Uint8Array,
+  w: number,
+  h: number,
+  period: number,
+) {
+  const st = stats(enhanced, mask);
+  const snapFloor = st.mean - 0.02 * st.std;
+  const dsep = period;
+  const dtest = period * 0.42;
+  const step = 0.85;
+  const committed = new SepGrid(period * 0.42);
+  const angAt = (x: number, y: number) => {
+    const xi = clamp(Math.round(x), 0, w - 1);
+    const yi = clamp(Math.round(y), 0, h - 1);
+    return orient[yi * w + xi];
+  };
+  const inside = (x: number, y: number) => {
+    const xi = Math.round(x);
+    const yi = Math.round(y);
+    if (xi < 2 || yi < 2 || xi >= w - 2 || yi >= h - 2) return false;
+    return mask[yi * w + xi] === 1;
+  };
+  const snapFine = (x: number, y: number, dirx: number, diry: number) => {
+    const center = sample(enhanced, w, h, x, y);
+    if (center < snapFloor) return { x, y };
+    const nx = -diry;
+    const ny = dirx;
+    let best = 0;
+    let bestV = center;
+    const reach = period * 0.18;
+    for (let off = -reach; off <= reach; off += 0.45) {
+      const v = sample(enhanced, w, h, x + nx * off, y + ny * off);
+      if (v > bestV) {
+        bestV = v;
+        best = off;
+      }
+    }
+    return { x: x + nx * best * 0.8, y: y + ny * best * 0.8 };
+  };
+  const snapSeed = (x: number, y: number, dirx: number, diry: number) => {
+    const nx = -diry;
+    const ny = dirx;
+    let best = 0;
+    let bestV = -Infinity;
+    const reach = period * 0.46;
+    for (let off = -reach; off <= reach; off += 0.4) {
+      const px = x + nx * off;
+      const py = y + ny * off;
+      if (committed.nearest(px, py) < dsep * 0.58) continue;
+      const v = sample(enhanced, w, h, px, py);
+      if (v > bestV) {
+        bestV = v;
+        best = off;
+      }
+    }
+    if (bestV < snapFloor) return { x, y };
+    return { x: x + nx * best, y: y + ny * best };
+  };
+
+  function trace(sx: number, sy: number, sign: number) {
+    const pts: Pt[] = [];
+    const own = new SepGrid(period * 0.42);
+    const lag: Pt[] = [];
+    let px = sx;
+    let py = sy;
+    const theta0 = angAt(px, py);
+    let vx = Math.cos(theta0) * sign;
+    let vy = Math.sin(theta0) * sign;
+    let closed = false;
+    const limit = Math.round((w + h) * 2.4);
+    for (let i = 0; i < limit; i++) {
+      if (!inside(px, py)) break;
+      const nearOwn = pts.length > Math.round(period * 6) ? own.nearest(px, py) : Infinity;
+      const nearOther = i > 5 ? committed.nearest(px, py) : Infinity;
+      if (nearOther < dtest) break;
+      if (nearOwn < dtest * 0.82) {
+        closed = true;
+        break;
+      }
+      const point = { x: px, y: py };
+      pts.push(point);
+      lag.push(point);
+      if (lag.length > 16) own.add(lag.shift()!);
+      const theta = angAt(px, py);
+      let dx = Math.cos(theta);
+      let dy = Math.sin(theta);
+      if (dx * vx + dy * vy < 0) {
+        dx = -dx;
+        dy = -dy;
+      }
+      vx = vx * 0.25 + dx * 0.75;
+      vy = vy * 0.25 + dy * 0.75;
+      const len = Math.hypot(vx, vy) || 1;
+      vx /= len;
+      vy /= len;
+      let nx = px + vx * step;
+      let ny = py + vy * step;
+      const beside = committed.nearestPoint(nx, ny);
+      if (beside && beside.d < dsep * 0.92 && beside.d > 0.4) {
+        let rx = nx - beside.x;
+        let ry = ny - beside.y;
+        const rl = Math.hypot(rx, ry) || 1;
+        rx /= rl;
+        ry /= rl;
+        const side = Math.abs(rx * vy - ry * vx);
+        if (side > 0.35) {
+          const push = (dsep - beside.d) * 0.12;
+          nx += rx * push;
+          ny += ry * push;
+        }
+      }
+      const next = snapFine(nx, ny, vx, vy);
+      px = next.x;
+      py = next.y;
+    }
+    return { pts, closed };
+  }
+
+  const stride = Math.max(4, Math.round(period * 0.85));
+  let bestX = w * 0.5;
+  let bestY = h * 0.5;
+  let bestV = -Infinity;
+  for (let y = stride; y < h - stride; y += stride) {
+    for (let x = stride; x < w - stride; x += stride) {
+      if (!inside(x, y)) continue;
+      const v = enhanced[Math.round(y) * w + Math.round(x)];
+      if (v > bestV) {
+        bestV = v;
+        bestX = x;
+        bestY = y;
+      }
+    }
+  }
+  const queue: Pt[] = [{ x: bestX, y: bestY }];
+  const seeded = new SepGrid(period * 0.4);
+  const raw: { points: Pt[]; closed: boolean }[] = [];
+  const cap = 340;
+  let spins = 0;
+  let rejected = 0;
+  let accepted = 0;
+  let tooShort = 0;
+
+  const accept = (points: Pt[], closed: boolean, minFactor: number) => {
+    if (points.length < 12 || pathLengthOf(points) < period * minFactor) {
+      tooShort++;
+      return;
+    }
+    accepted++;
+    let smooth = smoothPath(points, 4);
+    smooth = smoothPath(smooth, 2);
+    smooth = resamplePath(smooth, 2.15);
+    raw.push({ points: smooth, closed });
+    for (let i = 0; i < smooth.length; i += 2) committed.add(smooth[i]);
+    const hop = Math.max(6, Math.round(period * 0.65));
+    for (let i = hop; i < smooth.length - 2; i += hop) {
+      const a = smooth[Math.max(0, i - 3)];
+      const b = smooth[Math.min(smooth.length - 1, i + 3)];
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const nx = -dy / len;
+      const ny = dx / len;
+      queue.push({ x: smooth[i].x + nx * dsep, y: smooth[i].y + ny * dsep });
+      queue.push({ x: smooth[i].x - nx * dsep, y: smooth[i].y - ny * dsep });
+    }
+  };
+
+  while (queue.length && raw.length < cap && spins < 8000) {
+    spins++;
+    const seed = queue.shift()!;
+    if (!inside(seed.x, seed.y)) continue;
+    if (committed.nearest(seed.x, seed.y) < dsep * 0.72) {
+      rejected++;
+      continue;
+    }
+    if (seeded.nearest(seed.x, seed.y) < period * 0.28) continue;
+    const theta = angAt(seed.x, seed.y);
+    let pulled = snapSeed(seed.x, seed.y, Math.cos(theta), Math.sin(theta));
+    if (!inside(pulled.x, pulled.y) || committed.nearest(pulled.x, pulled.y) < dsep * 0.7) pulled = seed;
+    if (committed.nearest(pulled.x, pulled.y) < dsep * 0.7) continue;
+    seeded.add(pulled);
+    const forward = trace(pulled.x, pulled.y, 1);
+    const back = trace(pulled.x, pulled.y, -1);
+    accept([...back.pts.reverse(), ...forward.pts.slice(1)], forward.closed || back.closed, 1.6);
+  }
+
+  for (let y = stride; y < h - stride && raw.length < cap; y += dsep * 0.55) {
+    for (let x = stride; x < w - stride && raw.length < cap; x += dsep * 0.55) {
+      if (!inside(x, y)) continue;
+      if (committed.nearest(x, y) < dsep * 0.78) continue;
+      const theta = angAt(x, y);
+      let pulled = snapSeed(x, y, Math.cos(theta), Math.sin(theta));
+      if (!inside(pulled.x, pulled.y) || committed.nearest(pulled.x, pulled.y) < dsep * 0.74) pulled = { x, y };
+      if (committed.nearest(pulled.x, pulled.y) < dsep * 0.74) continue;
+      const forward = trace(pulled.x, pulled.y, 1);
+      const back = trace(pulled.x, pulled.y, -1);
+      accept([...back.pts.reverse(), ...forward.pts.slice(1)], false, 1.8);
+    }
+  }
+
+  const ridges: Ridge[] = [];
+  for (const item of raw) {
+    const ridge = finishRidge(item.points, item.closed, Math.max(10, period * 1.35));
+    if (ridge) ridges.push(ridge);
+  }
+  ridges.sort((a, b) => b.length - a.length);
+  if (process.env.RIDGE_DEBUG) {
+    const mean = ridges.reduce((sum, ridge) => sum + ridge.length, 0) / Math.max(1, ridges.length);
+    console.log("streamlines", ridges.length, "mean", mean.toFixed(0), "period", period.toFixed(2), "accepted", accepted, "short", tooShort, "rejected", rejected, "spins", spins);
+  }
+  return ridges;
+}
+
 function prepare(gray: Float32Array, w: number, h: number, ridgesAreDark: boolean) {
   const bright = new Float32Array(w * h);
   for (let i = 0; i < gray.length; i++) bright[i] = ridgesAreDark ? 255 - gray[i] : gray[i];
   const denoised = median3(bright, w, h);
   const soft = blurSeparable(denoised, w, h, 1);
   let mask = varianceMask(soft, w, h);
+  mask = Uint8Array.from(solidifyMask(mask, w, h));
   const { orient, coherence } = orientationField(soft, mask, w, h);
-  for (let i = 0; i < mask.length; i++) {
-    if (coherence[i] < 0.22) mask[i] = 0;
-  }
-  mask = dilate(mask, w, h, 1);
   const norm = localNormalize(soft, mask, w, h);
   const period = estimatePeriod(norm, orient, mask, coherence, w, h);
   return { mask, orient, coherence, norm, period };
@@ -1061,7 +1501,9 @@ export function extractFromGray(grayIn: Float32Array, widthIn: number, heightIn:
     options.ridges === "dark" ? true : options.ridges === "light" ? false : detectDarkRidges(gray, w, h);
 
   let prep = prepare(gray, w, h, ridgesAreDark);
-  if (options.rescale !== false && prep.period >= 6 && prep.period <= 22) {
+  for (let pass = 0; pass < 2 && options.rescale !== false; pass++) {
+    if (prep.period < 6 || prep.period > 22) break;
+    if (Math.abs(prep.period - targetPeriod) < 1.25) break;
     let scale = targetPeriod / prep.period;
     let nw = Math.round(w * scale);
     let nh = Math.round(h * scale);
@@ -1071,12 +1513,11 @@ export function extractFromGray(grayIn: Float32Array, widthIn: number, heightIn:
       nw = Math.round(nw * cap);
       nh = Math.round(nh * cap);
     }
-    if (nw >= 64 && nh >= 64 && (Math.abs(nw - w) > 8 || Math.abs(nh - h) > 8)) {
-      gray = resizeBilinear(gray, w, h, nw, nh);
-      w = nw;
-      h = nh;
-      prep = prepare(gray, w, h, ridgesAreDark);
-    }
+    if (nw < 64 || nh < 64 || (Math.abs(nw - w) <= 8 && Math.abs(nh - h) <= 8)) break;
+    gray = resizeBilinear(gray, w, h, nw, nh);
+    w = nw;
+    h = nh;
+    prep = prepare(gray, w, h, ridgesAreDark);
   }
 
   let enhanced = gabor(prep.norm, prep.orient, prep.mask, w, h, prep.period);
@@ -1112,19 +1553,30 @@ export function extractFromGray(grayIn: Float32Array, widthIn: number, heightIn:
     }
   }
 
-  const est = stats(peaks, prep.mask);
-  const high = Math.max(0.02, est.mean + 0.35 * est.std);
-  const low = Math.max(0.008, est.mean * 0.45);
-  let binary = hysteresis(peaks, prep.mask, w, h, high, low);
-  binary = dropSpecks(binary, w, h, Math.round(prep.period * 1.4));
-  let skeleton = zhangSuen(binary, w, h);
-  skeleton = pruneSpurs(skeleton, w, h, Math.round(prep.period * 0.55));
-  skeleton = linkGaps(skeleton, prep.orient, w, h, prep.period * 1.2);
-  skeleton = pruneSpurs(skeleton, w, h, Math.round(prep.period * 0.4));
-  skeleton = dropSpecks(skeleton, w, h, Math.round(prep.period * 1.6));
+  const traced = streamlineRidges(enhanced, prep.orient, prep.mask, w, h, prep.period);
+  let ridges = traced.length > 6 ? joinRidges(traced, prep.period) : [];
 
-  const traced = followRidges(enhanced, prep.orient, prep.mask, prep.coherence, w, h, prep.period);
-  const ridges = joinRidges(traced.length > 4 ? traced : traceSkeleton(skeleton, w, h, Math.max(8, prep.period * 1.15)), prep.period);
+  let binary = new Uint8Array(w * h);
+  let skeleton = binary;
+  if (options.debug || ridges.length < 8) {
+    const est = stats(peaks, prep.mask);
+    const high = Math.max(0.02, est.mean + 0.35 * est.std);
+    const low = Math.max(0.008, est.mean * 0.45);
+    binary = hysteresis(peaks, prep.mask, w, h, high, low);
+    binary = dropSpecks(binary, w, h, Math.round(prep.period * 1.4));
+    skeleton = zhangSuen(binary, w, h);
+    skeleton = pruneSpurs(skeleton, w, h, Math.round(prep.period * 0.55));
+    skeleton = linkGaps(skeleton, prep.orient, w, h, prep.period * 1.2);
+    skeleton = pruneSpurs(skeleton, w, h, Math.round(prep.period * 0.4));
+    skeleton = dropSpecks(skeleton, w, h, Math.round(prep.period * 1.6));
+    if (ridges.length < 8) {
+      const fallback = followRidges(enhanced, prep.orient, prep.mask, prep.coherence, w, h, prep.period);
+      ridges = joinRidges(
+        fallback.length > 4 ? fallback : traceSkeleton(skeleton, w, h, Math.max(8, prep.period * 1.15)),
+        prep.period,
+      );
+    }
+  }
   if (ridges.length < 8) {
     warnings.push("Few ridge lines were found. Try a closer, sharper photo with the print filling the frame.");
   }

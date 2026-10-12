@@ -64,10 +64,10 @@ export type PrintStyle = {
   script: string;
   /** Line under the portrait. */
   footer?: string;
-  /** Primary dedication, set in the core. */
+  /** Primary dedication, set along the innermost core ridges. */
   centerName?: string;
   centerDetail?: string;
-  /** Second dedication, set just under the core. */
+  /** Second dedication, set along the next ridges out, slightly larger. */
   secondaryName?: string;
   secondaryDetail?: string;
   /** Names repeated along the ridges, one phrase each. Spelled as given. */

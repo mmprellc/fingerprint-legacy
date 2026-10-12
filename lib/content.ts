@@ -131,6 +131,7 @@ export type GalleryPiece = {
   pdf?: string;
   compare?: string;
   closeup?: string;
+  overlay?: string;
 };
 
 export const galleryPieces: GalleryPiece[] = [
@@ -139,12 +140,13 @@ export const galleryPieces: GalleryPiece[] = [
     title: "Randy Czyz",
     image: "/pieces/randy-czyz.png",
     occasion: "memorials",
-    caption: "Randy Czyz's own ink print, carrying the family and four verses. Two dedications sit in the core.",
+    caption: "Randy Czyz's own ink print. His dedication follows the center loop, Maryanne's the next ridges, and the family and four verses make up the rest.",
     couple: false,
     studio: "/studio?piece=randy-czyz",
     pdf: "/pieces/randy-czyz.pdf",
     compare: "/pieces/randy-czyz-compare.png",
     closeup: "/pieces/randy-czyz-closeup.png",
+    overlay: "/pieces/randy-czyz-overlay.png",
   },
   {
     slug: "memorial",

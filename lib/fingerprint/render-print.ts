@@ -3,7 +3,7 @@ import opentype from "opentype.js";
 import { PDFDocument } from "pdf-lib";
 import sharp from "sharp";
 import { toPathD } from "./geometry";
-import { ellipsePath, fontSizeFor, inPlaque, packRuns, placeGlyphs, plaqueFor, poseAt, ridgeWidth, ridgeWords, UNDERSTROKE, uprightRuns } from "./lettering";
+import { bodySources, classifyRidges, dedicationWords, fontSizeFor, packBodyRuns, packRuns, placeGlyphs, poseAt, ridgeWidth, roleScale, UNDERSTROKE, uprightRuns, type RidgeRole } from "./lettering";
 import { fontById, mapPrint, presetById } from "./preview";
 import type { PreviewPrint } from "./preview";
 import type { PrintStyle, Pt } from "./types";
@@ -44,13 +44,19 @@ function measureToken(font: GlyphFont, word: string, fontSize: number, tracking:
   return width;
 }
 
+function ridgeBand(role: RidgeRole, coreWords: string[], secondaryWords: string[]): RidgeRole {
+  if (role === "core" && coreWords.length) return "core";
+  if (role === "secondary" && secondaryWords.length) return "secondary";
+  return "body";
+}
+
 function layoutRun(font: GlyphFont, text: string, points: Pt[], fontSize: number) {
-  const tracking = -fontSize * 0.055;
+  const tracking = -fontSize * 0.05;
   const glyphs = placeGlyphs(
     text,
     pathLengthOf(points),
     (ch) => advanceOf(font, ch, fontSize),
-    fontSize * 0.2,
+    fontSize * 0.16,
     tracking,
   );
   const placed: { d: string; x: number; y: number; angle: number }[] = [];
@@ -158,62 +164,56 @@ export async function renderArtwork(request: RenderRequest) {
   const fontSize = fontSizeFor(request.period, request.style.textScale || 1) * fit;
   const ink = preset.ink;
   const bridge = ridgeWidth(request.period) * fit * UNDERSTROKE;
-  const tracking = -fontSize * 0.055;
   const groups: string[] = [];
   const defs: string[] = [];
-  request.prints.forEach((print, printIndex) => {
-    const words = ridgeWords(request.style.names, request.style.scriptures, print.lines);
-    const gap = fontSize * 0.2;
-    const measure = (word: string) => measureToken(face, word, fontSize, tracking, gap);
-    const cursor = { i: 0 };
+  request.prints.forEach((print) => {
     const ridges = mapPrint(print);
-    const sourcePlaque = plaqueFor(ridges, request.style, request.period);
-    const plaque = sourcePlaque
-      ? {
-          cx: ox + (sourcePlaque.cx - minX) * fit,
-          cy: oy + (sourcePlaque.cy - minY) * fit,
-          rx: sourcePlaque.rx * fit,
-          ry: sourcePlaque.ry * fit,
-          lines: sourcePlaque.lines.map((line) => ({ ...line, fontSize: line.fontSize * fit })),
-          baselines: sourcePlaque.baselines.map((baseline) => oy + (baseline - minY) * fit),
-        }
-      : null;
-    if (plaque) fitPlaque(plaque, face, titleFace, ridgeWidth(request.period) * fit);
-    if (plaque) {
-      defs.push(
-        `<clipPath id="keep${printIndex}"><path fill-rule="evenodd" d="M0 0 H${paperW} V${paperH} H0 Z ${ellipsePath(plaque.cx, plaque.cy, plaque.rx, plaque.ry)}"/></clipPath>`,
-      );
+    const roles = classifyRidges(ridges, request.period);
+    const bodySource = bodySources(request.style.names, request.style.scriptures, print.lines);
+    const coreWords = dedicationWords(request.style, "core");
+    const secondaryWords = dedicationWords(request.style, "secondary");
+    const cursors: Record<"core" | "secondary", { i: number }> = { core: { i: 0 }, secondary: { i: 0 } };
+    const nameCursor = { i: 0 };
+    const verseCursor = { i: 0 };
+    const drawn = ridges.map((ridge, ridgeIndex) => ({
+      role: roles[ridgeIndex] ?? "body",
+      points: ridge.points.map((point) => ({
+        x: ox + (point.x - minX) * fit,
+        y: oy + (point.y - minY) * fit,
+      })),
+    })).filter((ridge) => pathLengthOf(ridge.points) >= fontSize * 0.9);
+    const ceilings: Record<RidgeRole, number> = { core: 0, secondary: 0, body: 0 };
+    for (const ridge of drawn) {
+      const band = ridgeBand(ridge.role, coreWords, secondaryWords);
+      for (const run of uprightRuns(ridge.points)) ceilings[band] = Math.max(ceilings[band], pathLengthOf(run));
     }
     const body: string[] = [];
-    const drawn = ridges.map((ridge) => ridge.points.map((point) => ({
-      x: ox + (point.x - minX) * fit,
-      y: oy + (point.y - minY) * fit,
-    }))).filter((points) => pathLengthOf(points) >= fontSize * 1.4);
-    const ceiling = drawn.reduce((max, points) => Math.max(max, ...uprightRuns(points).map((run) => pathLengthOf(run))), 0);
-    for (const points of drawn) {
-      body.push(
-        `<path d="${toPathD(points)}" fill="none" stroke="${ink}" stroke-width="${bridge.toFixed(2)}" stroke-linecap="round" stroke-linejoin="round"/>`,
-      );
-      const packed = packRuns(uprightRuns(points), words, measure, gap, cursor, ceiling);
+    for (const ridge of drawn) {
+      if (bridge > 0.3) {
+        body.push(
+          `<path d="${toPathD(ridge.points)}" fill="none" stroke="${ink}" stroke-width="${bridge.toFixed(2)}" stroke-linecap="round" stroke-linejoin="round"/>`,
+        );
+      }
+      const band = ridgeBand(ridge.role, coreWords, secondaryWords);
+      const size = fontSize * roleScale(band);
+      const gap = size * 0.16;
+      const tracking = -size * 0.05;
+      const measure = (word: string) => measureToken(face, word, size, tracking, gap);
+      const weight = Math.max(0.3, size * (band === "core" ? 0.07 : band === "secondary" ? 0.055 : 0.04));
+      const packed = band === "body"
+        ? packBodyRuns(uprightRuns(ridge.points), bodySource.names, bodySource.verses, measure, gap, nameCursor, verseCursor, ceilings.body)
+        : packRuns(uprightRuns(ridge.points), band === "core" ? coreWords : secondaryWords, measure, gap, cursors[band], ceilings[band]);
       for (const run of packed) {
         if (!run.text) continue;
-        const glyphs = layoutRun(face, run.text, run.points, fontSize);
+        const glyphs = layoutRun(face, run.text, run.points, size);
         for (const glyph of glyphs) {
-          if (plaque && inPlaque(glyph.x, glyph.y, plaque, fontSize * 0.45)) continue;
           body.push(
-            `<g transform="translate(${glyph.x.toFixed(2)} ${glyph.y.toFixed(2)}) rotate(${glyph.angle.toFixed(2)})"><path d="${glyph.d}" fill="${ink}"/></g>`,
+            `<g transform="translate(${glyph.x.toFixed(2)} ${glyph.y.toFixed(2)}) rotate(${glyph.angle.toFixed(2)})"><path d="${glyph.d}" fill="${ink}" stroke="${ink}" stroke-width="${weight.toFixed(2)}" stroke-linejoin="round"/></g>`,
           );
         }
       }
     }
-    groups.push(`<g${plaque ? ` clip-path="url(#keep${printIndex})"` : ""}>${body.join("")}</g>`);
-    if (!plaque) return;
-    groups.push(`<path d="${ellipsePath(plaque.cx, plaque.cy, plaque.rx * 0.98, plaque.ry * 0.98)}" fill="${preset.paper}"/>`);
-    plaque.lines.forEach((line, lineIndex) => {
-      const font = line.emphasis ? face : titleFace;
-      const glyphs = layoutCentered(font, line.text, line.fontSize, plaque.cx, plaque.baselines[lineIndex], line.emphasis ? 0.02 : 0.04);
-      groups.push(`<g fill="${ink}">${glyphs}</g>`);
-    });
+    groups.push(`<g>${body.join("")}</g>`);
   });
 
   const caption = request.matchSource ? "" : frameCaption(request.style, titleFace, scriptFace, paperW, paperH, topPx, bottomPx, ink);
@@ -225,26 +225,6 @@ export async function renderArtwork(request: RenderRequest) {
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
   const pdf = await pngToPdf(png, request.inches, paperW, paperH, request.style.title || "Fingerprint Legacy");
   return { svg, png, pdf, width: paperW, height: paperH };
-}
-
-function fitPlaque(
-  plaque: { cx: number; cy: number; rx: number; ry: number; lines: { text: string; fontSize: number; emphasis: boolean }[]; baselines: number[] },
-  face: GlyphFont,
-  titleFace: GlyphFont,
-  pad: number,
-) {
-  let maxW = 0;
-  for (const line of plaque.lines) {
-    const font = line.emphasis ? face : titleFace;
-    const tracking = line.fontSize * (line.emphasis ? 0.02 : 0.04);
-    maxW = Math.max(maxW, measureToken(font, line.text, line.fontSize, tracking, line.fontSize * 0.2));
-  }
-  const first = plaque.lines[0];
-  const last = plaque.lines[plaque.lines.length - 1];
-  const top = plaque.baselines[0] - first.fontSize * 0.95;
-  const bottom = plaque.baselines[plaque.baselines.length - 1] + last.fontSize * 0.42;
-  plaque.rx = Math.max(plaque.rx, (maxW / 2 + pad * 1.6) / 0.98);
-  plaque.ry = Math.max(plaque.ry, (Math.max(bottom - plaque.cy, plaque.cy - top) + pad * 1.15) / 0.98);
 }
 
 function frameCaption(style: PrintStyle, titleFace: GlyphFont, scriptFace: GlyphFont, paperW: number, paperH: number, topPx: number, bottomPx: number, ink: string) {
