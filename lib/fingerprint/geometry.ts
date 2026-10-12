@@ -156,6 +156,36 @@ export function toPathD(points: Pt[]): string {
   return d;
 }
 
+/** The portion of a path between two distances, including the cut endpoints. */
+export function slicePath(points: Pt[], start: number, end: number): Pt[] {
+  if (points.length < 2) return [];
+  const length = pathLength(points);
+  const a = Math.max(0, Math.min(length, start));
+  const b = Math.max(a, Math.min(length, end));
+  if (b - a < 1) return [];
+  const out: Pt[] = [];
+  let walked = 0;
+  for (let i = 1; i < points.length; i++) {
+    const p0 = points[i - 1];
+    const p1 = points[i];
+    const seg = Math.hypot(p1.x - p0.x, p1.y - p0.y);
+    if (seg < 1e-6) continue;
+    const segEnd = walked + seg;
+    if (segEnd >= a && walked <= b) {
+      const t0 = Math.max(0, (a - walked) / seg);
+      const t1 = Math.min(1, (b - walked) / seg);
+      const s = { x: p0.x + (p1.x - p0.x) * t0, y: p0.y + (p1.y - p0.y) * t0 };
+      const e = { x: p0.x + (p1.x - p0.x) * t1, y: p0.y + (p1.y - p0.y) * t1 };
+      const last = out[out.length - 1];
+      if (!last || Math.hypot(last.x - s.x, last.y - s.y) > 0.15) out.push(s);
+      if (Math.hypot(s.x - e.x, s.y - e.y) > 0.15) out.push(e);
+    }
+    walked = segEnd;
+    if (walked > b) break;
+  }
+  return out.length > 1 ? out : [];
+}
+
 export function pointAtLength(points: Pt[], distance: number): { x: number; y: number; angle: number } {
   if (points.length === 0) return { x: 0, y: 0, angle: 0 };
   if (points.length === 1) return { x: points[0].x, y: points[0].y, angle: 0 };

@@ -3,7 +3,7 @@ import opentype from "opentype.js";
 import { PDFDocument } from "pdf-lib";
 import sharp from "sharp";
 import { toPathD } from "./geometry";
-import { bodySources, classifyRidges, dedicationWords, fontSizeFor, packBodyRuns, packRuns, placeGlyphs, poseAt, ridgeWidth, roleScale, UNDERSTROKE, uprightRuns, type RidgeRole } from "./lettering";
+import { fontSizeFor, placeGlyphs, planPortrait, poseAt, ridgeWidth, roleScale, UNDERSTROKE } from "./lettering";
 import { fontById, mapPrint, presetById } from "./preview";
 import type { PreviewPrint } from "./preview";
 import type { PrintStyle, Pt } from "./types";
@@ -42,12 +42,6 @@ function measureToken(font: GlyphFont, word: string, fontSize: number, tracking:
     for (const ch of part) width += Math.max(0.4, advanceOf(font, ch, fontSize) + tracking);
   });
   return width;
-}
-
-function ridgeBand(role: RidgeRole, coreWords: string[], secondaryWords: string[]): RidgeRole {
-  if (role === "core" && coreWords.length) return "core";
-  if (role === "secondary" && secondaryWords.length) return "secondary";
-  return "body";
 }
 
 function layoutRun(font: GlyphFont, text: string, points: Pt[], fontSize: number) {
@@ -168,51 +162,46 @@ export async function renderArtwork(request: RenderRequest) {
   const defs: string[] = [];
   request.prints.forEach((print) => {
     const ridges = mapPrint(print);
-    const roles = classifyRidges(ridges, request.period);
-    const bodySource = bodySources(request.style.names, request.style.scriptures, print.lines);
-    const coreWords = dedicationWords(request.style, "core");
-    const secondaryWords = dedicationWords(request.style, "secondary");
-    const cursors: Record<"core" | "secondary", { i: number }> = { core: { i: 0 }, secondary: { i: 0 } };
-    const nameCursor = { i: 0 };
-    const verseCursor = { i: 0 };
-    const drawn = ridges.map((ridge, ridgeIndex) => ({
-      role: roles[ridgeIndex] ?? "body",
-      points: ridge.points.map((point) => ({
+    const sourceSize = fontSizeFor(request.period, request.style.textScale || 1);
+    const planned = planPortrait(
+      ridges,
+      request.style,
+      print.lines,
+      request.period,
+      (word, role) => {
+        const size = sourceSize * roleScale(role);
+        return measureToken(face, word, size, -size * 0.05, size * 0.16);
+      },
+      sourceSize * roleScale("body") * 0.16,
+    );
+    const body: string[] = [];
+    planned.forEach((runs, ridgeIndex) => {
+      const points = ridges[ridgeIndex].points.map((point) => ({
         x: ox + (point.x - minX) * fit,
         y: oy + (point.y - minY) * fit,
-      })),
-    })).filter((ridge) => pathLengthOf(ridge.points) >= fontSize * 0.9);
-    const ceilings: Record<RidgeRole, number> = { core: 0, secondary: 0, body: 0 };
-    for (const ridge of drawn) {
-      const band = ridgeBand(ridge.role, coreWords, secondaryWords);
-      for (const run of uprightRuns(ridge.points)) ceilings[band] = Math.max(ceilings[band], pathLengthOf(run));
-    }
-    const body: string[] = [];
-    for (const ridge of drawn) {
-      if (bridge > 0.3) {
+      }));
+      if (bridge > 0.3 && pathLengthOf(points) >= fontSize * 0.9) {
         body.push(
-          `<path d="${toPathD(ridge.points)}" fill="none" stroke="${ink}" stroke-width="${bridge.toFixed(2)}" stroke-linecap="round" stroke-linejoin="round"/>`,
+          `<path d="${toPathD(points)}" fill="none" stroke="${ink}" stroke-width="${bridge.toFixed(2)}" stroke-linecap="round" stroke-linejoin="round"/>`,
         );
       }
-      const band = ridgeBand(ridge.role, coreWords, secondaryWords);
-      const size = fontSize * roleScale(band);
-      const gap = size * 0.16;
-      const tracking = -size * 0.05;
-      const measure = (word: string) => measureToken(face, word, size, tracking, gap);
-      const weight = Math.max(0.3, size * (band === "core" ? 0.07 : band === "secondary" ? 0.055 : 0.04));
-      const packed = band === "body"
-        ? packBodyRuns(uprightRuns(ridge.points), bodySource.names, bodySource.verses, measure, gap, nameCursor, verseCursor, ceilings.body)
-        : packRuns(uprightRuns(ridge.points), band === "core" ? coreWords : secondaryWords, measure, gap, cursors[band], ceilings[band]);
-      for (const run of packed) {
+      for (const run of runs) {
         if (!run.text) continue;
-        const glyphs = layoutRun(face, run.text, run.points, size);
+        const size = fontSize * roleScale(run.role);
+        const weight = size * (run.role === "core" ? 0.02 : run.role === "secondary" ? 0.015 : 0);
+        const placed = run.points.map((point) => ({
+          x: ox + (point.x - minX) * fit,
+          y: oy + (point.y - minY) * fit,
+        }));
+        const glyphs = layoutRun(face, run.text, placed, size);
+        const stroke = weight > 0.15 ? ` stroke="${ink}" stroke-width="${weight.toFixed(2)}" stroke-linejoin="round"` : "";
         for (const glyph of glyphs) {
           body.push(
-            `<g transform="translate(${glyph.x.toFixed(2)} ${glyph.y.toFixed(2)}) rotate(${glyph.angle.toFixed(2)})"><path d="${glyph.d}" fill="${ink}" stroke="${ink}" stroke-width="${weight.toFixed(2)}" stroke-linejoin="round"/></g>`,
+            `<g transform="translate(${glyph.x.toFixed(2)} ${glyph.y.toFixed(2)}) rotate(${glyph.angle.toFixed(2)})"><path d="${glyph.d}" fill="${ink}"${stroke}/></g>`,
           );
         }
       }
-    }
+    });
     groups.push(`<g>${body.join("")}</g>`);
   });
 

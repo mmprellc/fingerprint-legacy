@@ -1,4 +1,4 @@
-import { pathLength, pointAtLength } from "./geometry";
+import { pathLength, pointAtLength, slicePath } from "./geometry";
 import type { PrintStyle, Pt } from "./types";
 
 /** Ink thickness as a fraction of the ridge period. Valleys stay open at this width. */
@@ -10,17 +10,18 @@ export const RIDGE_WIDTH_RATIO = 0.42;
  */
 export const UNDERSTROKE = 0;
 
-const CAP_RATIO = 0.69;
+/** Libre Baskerville Bold cap height, as a fraction of the em. */
+const CAP_EM = 0.77;
 
 export function ridgeWidth(period: number) {
   return Math.max(2.4, period * RIDGE_WIDTH_RATIO);
 }
 
 export function fontSizeFor(period: number, textScale = 1) {
-  // Cap height is a bit over half the ridge spacing, so a line of type reads as
-  // that ridge up close and still clears the next one.
-  const cap = Math.max(8, period * 0.62);
-  return (cap / CAP_RATIO) * (textScale || 1);
+  // Cap height stays inside 60–70% of the measured ridge spacing so neighboring
+  // lines of type cannot meet.
+  const cap = Math.max(6.5, period * 0.64);
+  return (cap / CAP_EM) * (textScale || 1);
 }
 
 export function wordsOf(lines: string[]) {
@@ -279,9 +280,139 @@ export function dedicationWords(style: PrintStyle, role: "core" | "secondary") {
 }
 
 export function roleScale(role: RidgeRole) {
-  if (role === "core") return 1.36;
-  if (role === "secondary") return 1.18;
+  // Dedications sit slightly larger, still inside 70% of the ridge period.
+  if (role === "core") return 1.06;
+  if (role === "secondary") return 1.03;
   return 1;
+}
+
+export type PlannedRun = { points: Pt[]; text: string; role: RidgeRole };
+
+function cleanLine(text: string | undefined) {
+  return (text ?? "").replace(/\s+/g, " ").trim();
+}
+
+/** Keep a phrase in the middle of a run and return the unused ends. */
+function centerSlice(points: Pt[], textWidth: number) {
+  const length = pathLength(points);
+  const sliceLen = textWidth + 2.6;
+  if (sliceLen > length - 0.5) return null;
+  const start = (length - sliceLen) / 2;
+  const end = start + sliceLen;
+  const pointsMid = slicePath(points, start, end);
+  if (pathLength(pointsMid) < textWidth + 1.4) return null;
+  const head = start > 10 ? slicePath(points, 0, Math.max(0, start - 2)) : [];
+  const tail = length - end > 10 ? slicePath(points, Math.min(length, end + 2), length) : [];
+  return { points: pointsMid, head, tail };
+}
+
+/**
+ * One dedication phrase per core ridge, each placed once. Names and verses
+ * fill every other run, including the unused ends of a dedication ridge.
+ */
+export function planPortrait(
+  ridges: { points: Pt[] }[],
+  style: PrintStyle,
+  lines: string[],
+  period: number,
+  measure: (word: string, role: RidgeRole) => number,
+  gap: number,
+): PlannedRun[][] {
+  const pairs: { role: "core" | "secondary"; lines: string[] }[] = [];
+  const coreLines = [cleanLine(style.centerName), cleanLine(style.centerDetail)].filter(Boolean);
+  const secondaryLines = [cleanLine(style.secondaryName), cleanLine(style.secondaryDetail)].filter(Boolean);
+  if (coreLines.length) pairs.push({ role: "core", lines: coreLines });
+  if (secondaryLines.length) pairs.push({ role: "secondary", lines: secondaryLines });
+
+  const origin = printCore(ridges, period);
+  const ranked = ridges
+    .map((ridge, index) => ({
+      index,
+      distance: medianDistance(ridge.points, origin),
+      length: pathLength(ridge.points),
+    }))
+    .filter((item) => item.length >= period * 4)
+    .sort((a, b) => a.distance - b.distance || b.length - a.length);
+
+  const hosting = new Map<number, { role: RidgeRole; line: string; run: number }[]>();
+  const usedRidges = new Set<number>();
+  let minDistance = -1;
+
+  for (const pair of pairs) {
+    let pending = pair.lines.slice();
+    let guard = 0;
+    while (pending.length && guard++ < ranked.length + 2) {
+      let host = -1;
+      for (const item of ranked) {
+        if (usedRidges.has(item.index)) continue;
+        if (minDistance >= 0 && item.distance < minDistance - period * 0.3) continue;
+        const need = measure(pending[0], pair.role) + 2.6;
+        const runs = uprightRuns(ridges[item.index].points);
+        if (runs.some((run) => pathLength(run) >= need)) {
+          host = item.index;
+          minDistance = item.distance;
+          break;
+        }
+      }
+      if (host < 0) break;
+      usedRidges.add(host);
+      const runs = uprightRuns(ridges[host].points);
+      const order = runs
+        .map((run, runIndex) => ({ runIndex, length: pathLength(run) }))
+        .sort((a, b) => b.length - a.length);
+      const placed: { role: RidgeRole; line: string; run: number }[] = [];
+      const usedRuns = new Set<number>();
+      for (const line of pending) {
+        const need = measure(line, pair.role) + 2.6;
+        const fit = order.find((item) => !usedRuns.has(item.runIndex) && item.length >= need);
+        if (!fit) break;
+        usedRuns.add(fit.runIndex);
+        placed.push({ role: pair.role, line, run: fit.runIndex });
+      }
+      if (!placed.length) break;
+      hosting.set(host, placed);
+      pending = pending.slice(placed.length);
+    }
+  }
+
+  const plans: PlannedRun[][] = ridges.map(() => []);
+  const slots: { ridge: number; points: Pt[] }[] = [];
+  ridges.forEach((ridge, index) => {
+    const runs = uprightRuns(ridge.points);
+    const marks = hosting.get(index) ?? [];
+    const marked = new Set(marks.map((mark) => mark.run));
+    for (const mark of marks) {
+      const slice = centerSlice(runs[mark.run], measure(mark.line, mark.role));
+      if (!slice) {
+        slots.push({ ridge: index, points: runs[mark.run] });
+        continue;
+      }
+      plans[index].push({ points: slice.points, text: mark.line, role: mark.role });
+      if (pathLength(slice.head) > period * 1.4) slots.push({ ridge: index, points: slice.head });
+      if (pathLength(slice.tail) > period * 1.4) slots.push({ ridge: index, points: slice.tail });
+    }
+    runs.forEach((run, runIndex) => {
+      if (!marked.has(runIndex)) slots.push({ ridge: index, points: run });
+    });
+  });
+
+  const source = bodySources(style.names, style.scriptures, lines);
+  const ceiling = slots.reduce((max, slot) => Math.max(max, pathLength(slot.points)), 0);
+  const packed = packBodyRuns(
+    slots.map((slot) => slot.points),
+    source.names,
+    source.verses,
+    (word) => measure(word, "body"),
+    gap,
+    { i: 0 },
+    { i: 0 },
+    ceiling,
+  );
+  packed.forEach((run, index) => {
+    if (!run.text) return;
+    plans[slots[index].ridge].push({ points: run.points, text: run.text, role: "body" });
+  });
+  return plans;
 }
 
 /** A paper plaque in the core so the dedications stay readable without moving the surrounding ridges. */

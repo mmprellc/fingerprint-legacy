@@ -1,5 +1,5 @@
-import { escapeXml, pathLength, toPathD } from "./geometry";
-import { bodySources, classifyRidges, dedicationWords, estimateWordWidth, fontSizeFor, packBodyRuns, packRuns, ridgeWidth, roleScale, UNDERSTROKE, uprightRuns, type RidgeRole } from "./lettering";
+import { escapeXml, toPathD } from "./geometry";
+import { estimateWordWidth, fontSizeFor, planPortrait, ridgeWidth, roleScale, UNDERSTROKE } from "./lettering";
 import { FONTS, INK_PRESETS, type PrintStyle, type Ridge } from "./types";
 
 export { fontSizeFor };
@@ -120,42 +120,33 @@ export function buildPreviewSvg(
   let index = 0;
   for (let printIndex = 0; printIndex < mapped.length; printIndex++) {
     const ridges = mapped[printIndex];
-    const roles = classifyRidges(ridges, period);
-    const body = bodySources(style.names, style.scriptures, ridges[0]?.lines ?? []);
-    const coreWords = dedicationWords(style, "core");
-    const secondaryWords = dedicationWords(style, "secondary");
-    const cursors: Record<"core" | "secondary", { i: number }> = { core: { i: 0 }, secondary: { i: 0 } };
-    const nameCursor = { i: 0 };
-    const verseCursor = { i: 0 };
-    const prepared = ridges.map((ridge) => uprightRuns(ridge.points));
-    const ceilings: Record<RidgeRole, number> = { core: 0, secondary: 0, body: 0 };
-    prepared.forEach((runs, ridgeIndex) => {
-      const role = roles[ridgeIndex] ?? "body";
-      for (const run of runs) ceilings[role] = Math.max(ceilings[role], pathLength(run));
-    });
-    prepared.forEach((runs, ridgeIndex) => {
+    const bodySize = fontSize * roleScale("body");
+    const planned = planPortrait(
+      ridges,
+      style,
+      ridges[0]?.lines ?? [],
+      period,
+      (word, role) => {
+        const size = fontSize * roleScale(role);
+        return estimateWordWidth(word, size, Math.max(font.charRatio, 0.62), -size * 0.045);
+      },
+      bodySize * 0.16,
+    );
+    planned.forEach((runs, ridgeIndex) => {
       const ridge = ridges[ridgeIndex];
-      const role = roles[ridgeIndex] ?? "body";
-      const band: RidgeRole = role === "core" && coreWords.length ? "core" : role === "secondary" && secondaryWords.length ? "secondary" : "body";
-      const size = fontSize * roleScale(band);
       const d = toPathD(ridge.points);
       strokes.push(`<path d="${d}" fill="none" stroke="${preset.ink}" stroke-width="${Math.max(0.8, period * 0.08)}" stroke-linecap="round" stroke-linejoin="round"/>`);
       if (understroke) {
         inkPaths.push(`<path d="${d}" fill="none" stroke="${preset.ink}" stroke-width="${bridge.toFixed(2)}" stroke-linecap="round" stroke-linejoin="round"/>`);
       }
-      const measure = (word: string) => estimateWordWidth(word, size, Math.max(font.charRatio, 0.62), -size * 0.045);
-      const packed = band === "body"
-        ? packBodyRuns(runs, body.names, body.verses, measure, size * 0.16, nameCursor, verseCursor, ceilings.body)
-        : packRuns(runs, band === "core" ? coreWords : secondaryWords, measure, size * 0.16, cursors[band], ceilings[band]);
-      const weight = band === "core" ? size * 0.045 : band === "secondary" ? size * 0.032 : 0;
-      for (const run of packed) {
+      for (const run of runs) {
         if (!run.text) continue;
+        const size = fontSize * roleScale(run.role);
         const id = `r${index++}`;
         defs.push(`<path id="${id}" d="${toPathD(run.points)}"/>`);
         const dy = (size * 0.38).toFixed(2);
-        const stroke = weight > 0.2 ? ` stroke="${preset.ink}" stroke-width="${weight.toFixed(2)}" paint-order="stroke fill" stroke-linejoin="round"` : "";
         texts.push(
-          `<text class="ridge ridge-${band}" font-size="${size.toFixed(2)}" letter-spacing="${(-size * 0.045).toFixed(2)}" fill="${preset.ink}" font-family="${escapeXml(opts?.fontFamily || font.family)}"${stroke}><textPath href="#${id}" dy="${dy}">${escapeXml(run.text)}</textPath></text>`,
+          `<text class="ridge ridge-${run.role}" font-size="${size.toFixed(2)}" letter-spacing="${(-size * 0.045).toFixed(2)}" fill="${preset.ink}" font-family="${escapeXml(opts?.fontFamily || font.family)}"><textPath href="#${id}" dy="${dy}">${escapeXml(run.text)}</textPath></text>`,
         );
       }
     });

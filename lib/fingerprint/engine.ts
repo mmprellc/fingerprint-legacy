@@ -196,6 +196,117 @@ function erode(bin: Uint8Array, w: number, h: number, r: number) {
   return out;
 }
 
+function dilateAxis(bin: Uint8Array, w: number, h: number, r: number, horizontal: boolean) {
+  const out = new Uint8Array(w * h);
+  const outer = horizontal ? h : w;
+  const inner = horizontal ? w : h;
+  for (let o = 0; o < outer; o++) {
+    const at = (i: number) => (horizontal ? bin[o * w + i] : bin[i * w + o]);
+    const set = (i: number, v: number) => {
+      if (horizontal) out[o * w + i] = v;
+      else out[i * w + o] = v;
+    };
+    let run = 0;
+    for (let i = 0; i < inner; i++) {
+      if (at(i)) run = r + 1;
+      set(i, run > 0 ? 1 : 0);
+      if (run) run--;
+    }
+    run = 0;
+    for (let i = inner - 1; i >= 0; i--) {
+      if (at(i)) run = r + 1;
+      if (run > 0) set(i, 1);
+      if (run) run--;
+    }
+  }
+  return out;
+}
+
+function dilateSep(bin: Uint8Array, w: number, h: number, r: number) {
+  if (r <= 0) return bin;
+  return dilateAxis(dilateAxis(bin, w, h, r, true), w, h, r, false);
+}
+
+function erodeSep(bin: Uint8Array, w: number, h: number, r: number) {
+  if (r <= 0) return bin;
+  const inv = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) inv[i] = bin[i] ? 0 : 1;
+  const grown = dilateSep(inv, w, h, r);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = grown[i] ? 0 : 1;
+  return out;
+}
+
+function countOn(bin: Uint8Array) {
+  let n = 0;
+  for (let i = 0; i < bin.length; i++) n += bin[i];
+  return n;
+}
+
+/** Bright paper tone from the top and bottom margins, ignoring ink that reaches an edge. */
+function paperTone(gray: Float32Array, w: number, h: number, ridgesAreDark: boolean) {
+  const band = Math.max(3, Math.round(h * 0.03));
+  const samples: number[] = [];
+  const take = (y: number) => {
+    for (let x = 0; x < w; x += 2) samples.push(gray[y * w + x]);
+  };
+  for (let y = 0; y < band; y++) take(y);
+  for (let y = Math.max(0, h - band); y < h; y++) take(y);
+  if (!samples.length) return ridgesAreDark ? 220 : 30;
+  samples.sort((a, b) => a - b);
+  const q = ridgesAreDark ? 0.72 : 0.28;
+  return samples[Math.min(samples.length - 1, Math.floor(samples.length * q))];
+}
+
+/**
+ * The whole inked oval, not only the sharpest blocks. Valleys between thin
+ * ridges are closed so the silhouette stays one piece.
+ */
+function printSilhouette(gray: Float32Array, varied: Uint8Array, w: number, h: number, ridgesAreDark: boolean) {
+  const paper = paperTone(gray, w, h, ridgesAreDark);
+  const ink = new Uint8Array(w * h);
+  const delta = 16;
+  const faint = 6;
+  for (let i = 0; i < gray.length; i++) {
+    const v = gray[i];
+    const darkEnough = ridgesAreDark ? v < paper - delta : v > paper + delta;
+    const faintRidge = varied[i] && (ridgesAreDark ? v < paper - faint : v > paper + faint);
+    if (darkEnough || faintRidge) ink[i] = 1;
+  }
+  const radius = Math.max(8, Math.round(Math.min(w, h) * 0.012));
+  let solid = dilateSep(ink, w, h, radius);
+  solid = erodeSep(solid, w, h, radius);
+  solid = fillHoles(solid, w, h);
+  solid = largestComponent(solid, w, h);
+  solid = erodeSep(solid, w, h, 1);
+  const variedSolid = Uint8Array.from(solidifyMask(varied, w, h));
+  const inkN = countOn(solid);
+  const variedN = countOn(variedSolid);
+  if (inkN < w * h * 0.02 || inkN < variedN * 0.75) {
+    for (let i = 0; i < solid.length; i++) if (variedSolid[i]) solid[i] = 1;
+    solid = largestComponent(fillHoles(solid, w, h), w, h);
+  }
+  if (process.env.RIDGE_DEBUG) {
+    let minY = h;
+    let maxY = 0;
+    let minX = w;
+    let maxX = 0;
+    let n = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (!solid[y * w + x]) continue;
+        n++;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+      }
+    }
+    console.log("silhouette", `${n}px`, `paper ${paper.toFixed(1)}`, `x ${minX}-${maxX}`, `y ${minY}-${maxY}`, `varied ${variedN}`);
+  }
+  return solid;
+}
+
 function localNormalize(gray: Float32Array, mask: Uint8Array, w: number, h: number) {
   const block = 28;
   const bw = Math.ceil(w / block);
@@ -1261,7 +1372,7 @@ function streamlineRidges(
   const st = stats(enhanced, mask);
   const snapFloor = st.mean - 0.02 * st.std;
   const dsep = period;
-  const dtest = period * 0.42;
+  const dtest = period * 0.74;
   const step = 0.85;
   const committed = new SepGrid(period * 0.42);
   const angAt = (x: number, y: number) => {
@@ -1301,7 +1412,7 @@ function streamlineRidges(
     for (let off = -reach; off <= reach; off += 0.4) {
       const px = x + nx * off;
       const py = y + ny * off;
-      if (committed.nearest(px, py) < dsep * 0.58) continue;
+      if (committed.nearest(px, py) < dsep * 0.82) continue;
       const v = sample(enhanced, w, h, px, py);
       if (v > bestV) {
         bestV = v;
@@ -1359,7 +1470,7 @@ function streamlineRidges(
         ry /= rl;
         const side = Math.abs(rx * vy - ry * vx);
         if (side > 0.35) {
-          const push = (dsep - beside.d) * 0.12;
+          const push = (dsep - beside.d) * 0.22;
           nx += rx * push;
           ny += ry * push;
         }
@@ -1372,6 +1483,7 @@ function streamlineRidges(
   }
 
   const stride = Math.max(4, Math.round(period * 0.85));
+  const cap = 720;
   let bestX = w * 0.5;
   let bestY = h * 0.5;
   let bestV = -Infinity;
@@ -1389,7 +1501,7 @@ function streamlineRidges(
   const queue: Pt[] = [{ x: bestX, y: bestY }];
   const seeded = new SepGrid(period * 0.4);
   const raw: { points: Pt[]; closed: boolean }[] = [];
-  const cap = 340;
+  const queueCap = 460;
   let spins = 0;
   let rejected = 0;
   let accepted = 0;
@@ -1420,33 +1532,33 @@ function streamlineRidges(
     }
   };
 
-  while (queue.length && raw.length < cap && spins < 8000) {
+  while (queue.length && raw.length < queueCap && spins < 12000) {
     spins++;
     const seed = queue.shift()!;
     if (!inside(seed.x, seed.y)) continue;
-    if (committed.nearest(seed.x, seed.y) < dsep * 0.72) {
+    if (committed.nearest(seed.x, seed.y) < dsep * 0.9) {
       rejected++;
       continue;
     }
     if (seeded.nearest(seed.x, seed.y) < period * 0.28) continue;
     const theta = angAt(seed.x, seed.y);
     let pulled = snapSeed(seed.x, seed.y, Math.cos(theta), Math.sin(theta));
-    if (!inside(pulled.x, pulled.y) || committed.nearest(pulled.x, pulled.y) < dsep * 0.7) pulled = seed;
-    if (committed.nearest(pulled.x, pulled.y) < dsep * 0.7) continue;
+    if (!inside(pulled.x, pulled.y) || committed.nearest(pulled.x, pulled.y) < dsep * 0.86) pulled = seed;
+    if (committed.nearest(pulled.x, pulled.y) < dsep * 0.86) continue;
     seeded.add(pulled);
     const forward = trace(pulled.x, pulled.y, 1);
     const back = trace(pulled.x, pulled.y, -1);
     accept([...back.pts.reverse(), ...forward.pts.slice(1)], forward.closed || back.closed, 1.6);
   }
 
-  for (let y = stride; y < h - stride && raw.length < cap; y += dsep * 0.55) {
-    for (let x = stride; x < w - stride && raw.length < cap; x += dsep * 0.55) {
+  for (let y = stride; y < h - stride && raw.length < cap; y += dsep * 0.7) {
+    for (let x = stride; x < w - stride && raw.length < cap; x += dsep * 0.7) {
       if (!inside(x, y)) continue;
-      if (committed.nearest(x, y) < dsep * 0.78) continue;
+      if (committed.nearest(x, y) < dsep * 0.92) continue;
       const theta = angAt(x, y);
       let pulled = snapSeed(x, y, Math.cos(theta), Math.sin(theta));
-      if (!inside(pulled.x, pulled.y) || committed.nearest(pulled.x, pulled.y) < dsep * 0.74) pulled = { x, y };
-      if (committed.nearest(pulled.x, pulled.y) < dsep * 0.74) continue;
+      if (!inside(pulled.x, pulled.y) || committed.nearest(pulled.x, pulled.y) < dsep * 0.88) pulled = { x, y };
+      if (committed.nearest(pulled.x, pulled.y) < dsep * 0.88) continue;
       const forward = trace(pulled.x, pulled.y, 1);
       const back = trace(pulled.x, pulled.y, -1);
       accept([...back.pts.reverse(), ...forward.pts.slice(1)], false, 1.8);
@@ -1471,12 +1583,37 @@ function prepare(gray: Float32Array, w: number, h: number, ridgesAreDark: boolea
   for (let i = 0; i < gray.length; i++) bright[i] = ridgesAreDark ? 255 - gray[i] : gray[i];
   const denoised = median3(bright, w, h);
   const soft = blurSeparable(denoised, w, h, 1);
-  let mask = varianceMask(soft, w, h);
-  mask = Uint8Array.from(solidifyMask(mask, w, h));
+  const varied = varianceMask(soft, w, h);
+  const mask = printSilhouette(gray, varied, w, h, ridgesAreDark);
   const { orient, coherence } = orientationField(soft, mask, w, h);
   const norm = localNormalize(soft, mask, w, h);
   const period = estimatePeriod(norm, orient, mask, coherence, w, h);
   return { mask, orient, coherence, norm, period };
+}
+
+/** Drop a ridge that spends most of its length on top of a longer one. */
+function enforceSpacing(ridges: Ridge[], period: number) {
+  const kept: Ridge[] = [];
+  const grid = new SepGrid(period * 0.45);
+  const sorted = ridges.slice().sort((a, b) => b.length - a.length);
+  const limit = period * 0.82;
+  const hardLimit = period * 0.62;
+  for (const ridge of sorted) {
+    let close = 0;
+    let hard = 0;
+    let samples = 0;
+    const step = Math.max(1, Math.round(ridge.points.length / 80));
+    for (let i = 0; i < ridge.points.length; i += step) {
+      samples++;
+      const nearest = grid.nearest(ridge.points[i].x, ridge.points[i].y);
+      if (nearest < hardLimit) hard++;
+      if (nearest < limit) close++;
+    }
+    if (samples >= 4 && (hard / samples > 0.18 || close / samples > 0.32)) continue;
+    kept.push(ridge);
+    for (let i = 0; i < ridge.points.length; i += 2) grid.add(ridge.points[i]);
+  }
+  return kept;
 }
 
 export function extractFromGray(grayIn: Float32Array, widthIn: number, heightIn: number, options: ExtractOptions = {}): ExtractResult {
@@ -1554,7 +1691,7 @@ export function extractFromGray(grayIn: Float32Array, widthIn: number, heightIn:
   }
 
   const traced = streamlineRidges(enhanced, prep.orient, prep.mask, w, h, prep.period);
-  let ridges = traced.length > 6 ? joinRidges(traced, prep.period) : [];
+  let ridges = traced.length > 6 ? enforceSpacing(joinRidges(traced, prep.period), prep.period) : [];
 
   let binary = new Uint8Array(w * h);
   let skeleton = binary;
