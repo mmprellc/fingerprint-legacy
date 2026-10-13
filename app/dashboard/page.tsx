@@ -3,7 +3,8 @@ import Link from "next/link";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { formatMoney, productById } from "@/lib/products";
-import { DASHBOARD_COOKIE, listOrders, verifyDashboard } from "@/lib/store";
+import { HostingConfigError } from "@/lib/runtime";
+import { DASHBOARD_COOKIE, listOrders, verifyDashboard, type Order } from "@/lib/store";
 
 export const metadata: Metadata = { title: "Orders" };
 export const dynamic = "force-dynamic";
@@ -11,7 +12,21 @@ export const dynamic = "force-dynamic";
 export default async function DashboardPage() {
   const jar = await cookies();
   if (!verifyDashboard(jar.get(DASHBOARD_COOKIE)?.value)) redirect("/dashboard/login");
-  const orders = await listOrders();
+  let orders: Order[] = [];
+  try {
+    orders = await listOrders();
+  } catch (error) {
+    if (error instanceof HostingConfigError) {
+      return (
+        <article className="page">
+          <p className="kicker">Owner</p>
+          <h1>Orders</h1>
+          <p className="alert" role="alert">{error.message}</p>
+        </article>
+      );
+    }
+    throw error;
+  }
   return (
     <article className="page">
       <p className="kicker">Owner</p>

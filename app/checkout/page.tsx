@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { paymentsMode } from "@/lib/fulfill";
 import { buyableProducts, formatMoney, productById } from "@/lib/products";
+import { HostingConfigError } from "@/lib/runtime";
 import { getDesign } from "@/lib/store";
 import { CheckoutForm } from "./checkout-form";
 
@@ -11,7 +12,20 @@ export const dynamic = "force-dynamic";
 export default async function CheckoutPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const params = await searchParams;
   const designId = typeof params.design === "string" ? params.design : "";
-  const design = designId ? await getDesign(designId) : null;
+  let design = null;
+  try {
+    design = designId ? await getDesign(designId) : null;
+  } catch (error) {
+    if (error instanceof HostingConfigError) {
+      return (
+        <article className="page">
+          <h1>Orders are not open yet.</h1>
+          <p className="lede">The host is missing its database. Run the production check, then try again.</p>
+        </article>
+      );
+    }
+    throw error;
+  }
   const error = typeof params.error === "string" ? params.error : "";
   if (!design) {
     return (
@@ -51,6 +65,7 @@ export default async function CheckoutPage({ searchParams }: { searchParams: Pro
 function messageFor(error: string) {
   if (error === "email") return "Enter an email address so the portrait has a place to go.";
   if (error === "address") return "A printed piece needs a shipping address.";
-  if (error === "stripe") return "Stripe did not return a payment page. Try again, or use test checkout.";
+  if (error === "stripe") return "Stripe did not return a payment page. Try again.";
+  if (error === "payments") return "Payments are not ready on this site yet.";
   return "Something about the order needs another look.";
 }
