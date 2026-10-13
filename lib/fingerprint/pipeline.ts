@@ -1,6 +1,7 @@
 import { auditLayout, capHeight, legibleScale, type Check } from "./audit";
 import { auditFidelity } from "./fidelity";
 import { extractFromGray } from "./engine";
+import { countCrossings, curvatureReport } from "./geometry";
 import { pitchSep, ridgePitch } from "./lettering";
 import { buildPreviewSvg } from "./preview";
 import type { ExtractProfile, ExtractResult, PrintStyle, Pt, Ridge } from "./types";
@@ -44,8 +45,8 @@ export type PortraitResult = {
 type Profile = ExtractProfile & { id: string; flip?: boolean };
 
 /**
- * The reconstructed field is seeded at about 1.4 line-heights. spacingLimit only
- * drops a line that lands on top of another; it does not thin the oval.
+ * The reconstructed field is seeded at about 1.4 line-heights. A later pass
+ * trims any path that comes within 0.8 of that pitch of another.
  */
 const FIELD_SEP = pitchSep(12);
 const LOCKED: Profile = { id: "locked", inkDelta: 30, spacingLimit: 0.72, spacingHard: 0.5, sepFactor: FIELD_SEP };
@@ -236,6 +237,8 @@ function auditGeometry(result: ExtractResult): Check[] {
     return [
       { id: "inside-mask", label: "Text inside the silhouette", passed: false, detail: "The silhouette was not usable." },
       { id: "spacing", label: "Collision-free spacing", passed: false, detail: "Not enough ridges to measure spacing." },
+      { id: "crossings", label: "No crossed ridges", passed: false, detail: "Not enough ridges to measure crossings." },
+      { id: "curvature", label: "Smooth ridge curves", passed: false, detail: "Not enough ridges to measure curvature." },
     ];
   }
 
@@ -313,6 +316,10 @@ function auditGeometry(result: ExtractResult): Check[] {
   const holeMax = holes.length ? holes[holes.length - 1] : pitch * 4;
   const gapOk = holeP90 <= pitch * 0.92 && holeMax <= pitch * 2.6;
 
+  const crossings = countCrossings(ridges);
+  const curve = curvatureReport(ridges);
+  const curveOk = curve.p95Radius >= pitch * 1.15 && curve.worstRadius >= pitch * 0.9;
+
   return [
     { id: "inside-mask", label: "Text inside the silhouette", passed: inside, detail: inside ? "The words stay inside the ink." : `${Math.round(outsideFrac * 100)}% of the text sits outside the ink.` },
     {
@@ -327,7 +334,24 @@ function auditGeometry(result: ExtractResult): Check[] {
       passed: gapOk,
       detail: `The widest open spot is ${holeMax.toFixed(1)}px (${pitch ? (holeMax / pitch).toFixed(2) : "0"}× the line pitch). Nine tenths of the oval is within ${holeP90.toFixed(1)}px.`,
     },
+    {
+      id: "crossings",
+      label: "No crossed ridges",
+      passed: crossings === 0,
+      detail: crossings === 0 ? "No ridge paths cross." : `Ridge paths cross ${crossings} times.`,
+    },
+    {
+      id: "curvature",
+      label: "Smooth ridge curves",
+      passed: curveOk,
+      detail: `Tightest bend ${formatRadius(curve.worstRadius)}px, 95th percentile ${formatRadius(curve.p95Radius)}px (${pitch ? (curve.p95Radius / pitch).toFixed(2) : "0"}× the line pitch).`,
+    },
   ];
+}
+
+function formatRadius(radius: number) {
+  if (!Number.isFinite(radius)) return "∞";
+  return radius.toFixed(1);
 }
 
 function attemptScore(checks: Check[]) {
@@ -336,7 +360,7 @@ function attemptScore(checks: Check[]) {
 
 function unmatched(checks: Check[]): RetakeGuidance {
   const names = checks.find((check) => check.id === "names" && !check.passed);
-  const geometryIds = new Set(["coverage", "shape", "flow", "likeness", "inside-mask", "spacing", "max-gap"]);
+  const geometryIds = new Set(["coverage", "shape", "flow", "likeness", "inside-mask", "spacing", "max-gap", "crossings", "curvature"]);
   const geometryOk = checks.filter((check) => geometryIds.has(check.id)).every((check) => check.passed);
   if (names && geometryOk) {
     return retake(

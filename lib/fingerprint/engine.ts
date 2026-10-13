@@ -1,4 +1,5 @@
-import { finishRidge, joinRidges, resamplePath, smoothPath } from "./geometry";
+import { cutCrossings, finishRidge, joinRidges, polishPath, relaxCurvature, resamplePath, ridgeFromPoints, trimSeparation } from "./geometry";
+import { printCore, ridgePitch } from "./lettering";
 import type { ExtractDebug, ExtractOptions, ExtractResult, Pt, Ridge } from "./types";
 
 const TARGET_PERIOD = 12;
@@ -324,7 +325,7 @@ function contourMask(component: Uint8Array, w: number, h: number) {
       right[y] = bestR;
     }
   }
-  const edgeRadius = Math.max(32, Math.round(Math.min(w, h) * 0.045));
+  const edgeRadius = Math.max(40, Math.round(Math.min(w, h) * 0.055));
   const smoothL = smoothEdge(left, edgeRadius);
   const smoothR = smoothEdge(right, edgeRadius);
   const out = new Uint8Array(w * h);
@@ -428,6 +429,109 @@ function localNormalize(gray: Float32Array, mask: Uint8Array, w: number, h: numb
   return out;
 }
 
+function blurDoubled(cosSrc: Float32Array, sinSrc: Float32Array, cohSrc: Float32Array, bw: number, bh: number, radius: number) {
+  const weight = new Float32Array(bw * bh);
+  for (let i = 0; i < weight.length; i++) {
+    weight[i] = Math.hypot(cosSrc[i], sinSrc[i]) > 1e-5 ? 0.25 + cohSrc[i] : 0;
+  }
+  const cos = blurWeighted(cosSrc, weight, bw, bh, radius);
+  const sin = blurWeighted(sinSrc, weight, bw, bh, radius);
+  const coh = new Float32Array(bw * bh);
+  for (let i = 0; i < coh.length; i++) coh[i] = Math.min(1, Math.hypot(cos[i], sin[i]));
+  return { cos, sin, coh };
+}
+
+/** Normalized separable blur. Samples with zero weight do not pull the field. */
+function blurWeighted(src: Float32Array, weight: Float32Array, bw: number, bh: number, radius: number) {
+  const r = Math.max(1, radius);
+  const kernel: number[] = [];
+  let sum = 0;
+  const sigma = r / 1.45;
+  for (let i = -r; i <= r; i++) {
+    const g = Math.exp(-(i * i) / (2 * sigma * sigma));
+    kernel.push(g);
+    sum += g;
+  }
+  for (let i = 0; i < kernel.length; i++) kernel[i] /= sum;
+  const tmp = new Float32Array(bw * bh);
+  const tmpW = new Float32Array(bw * bh);
+  for (let y = 0; y < bh; y++) {
+    for (let x = 0; x < bw; x++) {
+      let acc = 0;
+      let wsum = 0;
+      for (let k = -r; k <= r; k++) {
+        const xx = x + k;
+        if (xx < 0 || xx >= bw) continue;
+        const j = y * bw + xx;
+        const wgt = weight[j] * kernel[k + r];
+        if (wgt <= 0) continue;
+        acc += src[j] * wgt;
+        wsum += wgt;
+      }
+      tmp[y * bw + x] = acc;
+      tmpW[y * bw + x] = wsum;
+    }
+  }
+  const dst = new Float32Array(bw * bh);
+  for (let y = 0; y < bh; y++) {
+    for (let x = 0; x < bw; x++) {
+      let acc = 0;
+      let wsum = 0;
+      for (let k = -r; k <= r; k++) {
+        const yy = y + k;
+        if (yy < 0 || yy >= bh) continue;
+        const j = yy * bw + x;
+        const wgt = kernel[k + r];
+        acc += tmp[j] * wgt;
+        wsum += tmpW[j] * wgt;
+      }
+      dst[y * bw + x] = wsum > 1e-8 ? acc / wsum : 0;
+    }
+  }
+  return dst;
+}
+
+function blockAngle(c: number, s: number) {
+  let ang = 0.5 * Math.atan2(s, c);
+  if (ang < 0) ang += Math.PI;
+  return ang;
+}
+
+function wrapHalfPi(delta: number) {
+  let x = delta;
+  while (x > Math.PI / 2) x -= Math.PI;
+  while (x <= -Math.PI / 2) x += Math.PI;
+  return x;
+}
+
+/** Loop and whorl centers show up as a half or full turn of the orientation around a small circle. */
+function poincareIndex(cos2: Float32Array, sin2: Float32Array, bw: number, bh: number, bx: number, by: number, radius: number) {
+  const n = 16;
+  let sum = 0;
+  let prev = 0;
+  for (let i = 0; i <= n; i++) {
+    const t = (i / n) * Math.PI * 2;
+    const xx = Math.round(bx + Math.cos(t) * radius);
+    const yy = Math.round(by + Math.sin(t) * radius);
+    if (xx < 0 || yy < 0 || xx >= bw || yy >= bh) return 0;
+    const ang = blockAngle(cos2[yy * bw + xx], sin2[yy * bw + xx]);
+    if (i > 0) sum += wrapHalfPi(ang - prev);
+    prev = ang;
+  }
+  return sum / Math.PI;
+}
+
+function smoothstep01(t: number) {
+  const x = clamp(t, 0, 1);
+  return x * x * (3 - 2 * x);
+}
+
+function lerpOri(a: number, b: number, t: number) {
+  const c = (1 - t) * Math.cos(2 * a) + t * Math.cos(2 * b);
+  const s = (1 - t) * Math.sin(2 * a) + t * Math.sin(2 * b);
+  return blockAngle(c, s);
+}
+
 function orientationField(src: Float32Array, mask: Uint8Array, w: number, h: number) {
   const gx = new Float32Array(w * h);
   const gy = new Float32Array(w * h);
@@ -478,34 +582,11 @@ function orientationField(src: Float32Array, mask: Uint8Array, w: number, h: num
       }
     }
   }
-  // Smooth the doubled-angle field.
-  const scos = new Float32Array(bw * bh);
-  const ssin = new Float32Array(bw * bh);
-  const scoh = new Float32Array(bw * bh);
-  const rad = 2;
-  for (let by = 0; by < bh; by++) {
-    for (let bx = 0; bx < bw; bx++) {
-      let c = 0;
-      let s = 0;
-      let hsum = 0;
-      let wsum = 0;
-      for (let dy = -rad; dy <= rad; dy++) {
-        for (let dx = -rad; dx <= rad; dx++) {
-          const xx = bx + dx;
-          const yy = by + dy;
-          if (xx < 0 || yy < 0 || xx >= bw || yy >= bh) continue;
-          const weight = Math.exp(-(dx * dx + dy * dy) / 3.2) * (0.15 + coh[yy * bw + xx]);
-          c += cos2[yy * bw + xx] * weight;
-          s += sin2[yy * bw + xx] * weight;
-          hsum += coh[yy * bw + xx] * weight;
-          wsum += weight;
-        }
-      }
-      scos[by * bw + bx] = c;
-      ssin[by * bw + bx] = s;
-      scoh[by * bw + bx] = wsum ? hsum / wsum : 0;
-    }
-  }
+  // A light pass first, so the loop core can still be found before the heavy blur.
+  const light = blurDoubled(cos2, sin2, coh, bw, bh, 2);
+  const scos = light.cos;
+  const ssin = light.sin;
+  const scoh = light.coh;
   // Carry a reliable direction into smudged blocks so ridges can cross them.
   const inside = new Uint8Array(bw * bh);
   for (let by = 0; by < bh; by++) {
@@ -567,6 +648,24 @@ function orientationField(src: Float32Array, mask: Uint8Array, w: number, h: num
     curS = nextS;
     if (!filled) break;
   }
+  const core = findLoopCore(curC, curS, inside, bw, bh);
+  const capFlat = capHorizontal(curC, curS, inside, core.bx, core.by, bw);
+  if (process.env.RIDGE_DEBUG) console.log("core", core.found, core.kind, "flat", capFlat.toFixed(2), "by", core.by.toFixed(0));
+  const heavy = blurDoubled(curC, curS, scoh, bw, bh, 4);
+  const heavyAgain = blurDoubled(heavy.cos, heavy.sin, heavy.coh, bw, bh, 3);
+  const blendedC = new Float32Array(bw * bh);
+  const blendedS = new Float32Array(bw * bh);
+  for (let i = 0; i < blendedC.length; i++) {
+    const bx = i % bw;
+    const by = Math.floor(i / bw);
+    const dist = Math.hypot(bx - core.bx, by - core.by);
+    // Keep the loop itself. Everywhere else, use the large-radius field.
+    const useHeavy = smoothstep01((dist - 2.4) / 3.2);
+    blendedC[i] = curC[i] * (1 - useHeavy) + heavyAgain.cos[i] * useHeavy;
+    blendedS[i] = curS[i] * (1 - useHeavy) + heavyAgain.sin[i] * useHeavy;
+  }
+  curC = blendedC;
+  curS = blendedS;
   const orient = new Float32Array(w * h);
   const coherence = new Float32Array(w * h);
   for (let y = 0; y < h; y++) {
@@ -603,7 +702,154 @@ function orientationField(src: Float32Array, mask: Uint8Array, w: number, h: num
         scoh[i11] * tx * ty;
     }
   }
-  return { orient, coherence };
+  const coreX = (core.bx + 0.5) * block;
+  const coreY = (core.by + 0.5) * block;
+  const arcCap = core.found && (core.kind === "loop" || capFlat >= 0.62);
+  if (arcCap) nestArcsAboveCore(orient, mask, w, h, coreX, coreY);
+  return { orient, coherence, coreX, coreY: core.found ? coreY : maskCoreY(mask, w, h), arcCap };
+}
+
+function findLoopCore(cos2: Float32Array, sin2: Float32Array, inside: Uint8Array, bw: number, bh: number) {
+  let top = bh;
+  let bottom = 0;
+  let left = bw;
+  let right = 0;
+  for (let y = 0; y < bh; y++) {
+    for (let x = 0; x < bw; x++) {
+      if (!inside[y * bw + x]) continue;
+      if (y < top) top = y;
+      if (y > bottom) bottom = y;
+      if (x < left) left = x;
+      if (x > right) right = x;
+    }
+  }
+  const spanY = Math.max(1, bottom - top);
+  const spanX = Math.max(1, right - left);
+  // The fingertip curls into a false core. Keep the search on the loop, not the outline.
+  const minY = top + Math.max(4, spanY * 0.14);
+  const maxY = top + spanY * 0.62;
+  const minX = left + spanX * 0.2;
+  const maxX = right - spanX * 0.2;
+  let best = -Infinity;
+  let bx = (left + right) / 2;
+  let by = top + spanY * 0.4;
+  let found = false;
+  let kind: "loop" | "whorl" = "loop";
+  let bestLoop = -Infinity;
+  let loopBy = -1;
+  for (let y = Math.ceil(minY); y <= maxY; y++) {
+    for (let x = Math.ceil(minX); x <= maxX; x++) {
+      if (y < 3 || x < 3 || y >= bh - 3 || x >= bw - 3) continue;
+      if (!inside[y * bw + x]) continue;
+      const index = Math.abs(poincareIndex(cos2, sin2, bw, bh, x, y, 3));
+      const loop = Math.abs(index - 0.5);
+      const whorl = Math.abs(index - 1);
+      const miss = Math.min(loop, whorl);
+      if (whorl >= loop && miss <= 0.2 && index >= 0.28 && (1 - miss) - ((y - top) / spanY) * 0.2 > bestLoop) {
+        bestLoop = (1 - miss) - ((y - top) / spanY) * 0.2;
+        loopBy = y;
+      }
+      if (miss > 0.2 || index < 0.28) continue;
+      // Prefer the upper singularity (the loop) over a delta lower on the finger.
+      const score = (1 - miss) + (index > 0.75 ? 0.05 : 0.25) - ((y - top) / spanY) * 0.35;
+      if (score > best) {
+        best = score;
+        bx = x;
+        by = y;
+        found = true;
+        kind = whorl < loop ? "whorl" : "loop";
+      }
+    }
+  }
+  if (process.env.RIDGE_DEBUG) console.log("loopBy", loopBy, "bestLoop", bestLoop.toFixed(2));
+  return { bx, by, found, kind };
+}
+
+/** Share of the cap, above the core and away from the sides, that already runs near horizontal. */
+function capHorizontal(cos2: Float32Array, sin2: Float32Array, inside: Uint8Array, bx: number, by: number, bw: number) {
+  let top = Infinity;
+  let bottom = 0;
+  for (let i = 0; i < inside.length; i++) {
+    if (!inside[i]) continue;
+    const y = Math.floor(i / bw);
+    if (y < top) top = y;
+    if (y > bottom) bottom = y;
+  }
+  let n = 0;
+  let flat = 0;
+  const y0 = Number.isFinite(top) ? top : 0;
+  const y1 = y0 + Math.max(4, Math.round((bottom - y0) * 0.34));
+  void bx;
+  void by;
+  const x0 = Math.max(0, Math.floor(bw * 0.28));
+  const x1 = Math.min(bw - 1, Math.ceil(bw * 0.72));
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      if (!inside[y * bw + x]) continue;
+      const ang = blockAngle(cos2[y * bw + x], sin2[y * bw + x]);
+      const tilt = Math.min(ang, Math.PI - ang);
+      n++;
+      if (tilt < 0.42) flat++;
+    }
+  }
+  return n >= 8 ? flat / n : 0;
+}
+
+function maskCoreY(mask: Uint8Array, w: number, h: number) {
+  let top = h;
+  let bottom = 0;
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      if (!mask[row + x]) continue;
+      if (y < top) top = y;
+      if (y > bottom) bottom = y;
+    }
+  }
+  if (bottom <= top) return h * 0.55;
+  return top + (bottom - top) * 0.58;
+}
+
+/**
+ * Above the loop, replace the noisy print direction with nested shallow arcs.
+ * Image y grows downward, so a positive slope on the right side bows each row
+ * down toward the oval's edge.
+ */
+function nestArcsAboveCore(orient: Float32Array, mask: Uint8Array, w: number, h: number, coreX: number, coreYIn: number, strength = 0.98) {
+  let top = h;
+  let bottom = 0;
+  const left = new Float32Array(h).fill(-1);
+  const right = new Float32Array(h).fill(-1);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      if (!mask[row + x]) continue;
+      if (left[y] < 0) left[y] = x;
+      right[y] = x;
+      if (y < top) top = y;
+      if (y > bottom) bottom = y;
+    }
+  }
+  if (bottom <= top) return;
+  const coreY = coreYIn > 0 ? coreYIn : top + (bottom - top) * 0.58;
+  const span = Math.max(12, coreY - top);
+  for (let y = 0; y < h; y++) {
+    if (left[y] < 0 || y >= coreY) continue;
+    const u = clamp((coreY - y) / span, 0, 1);
+    const fade = smoothstep01((u - 0.08) / 0.2);
+    if (fade < 0.03) continue;
+    const half = Math.max(8, (right[y] - left[y]) / 2);
+    const cx = (left[y] + right[y]) / 2 * 0.7 + coreX * 0.3;
+    const row = y * w;
+    for (let x = Math.round(left[y]); x <= right[y]; x++) {
+      if (!mask[row + x]) continue;
+      const nx = clamp((x - cx) / half, -1.2, 1.2);
+      const slope = nx * 0.42;
+      let target = Math.atan(slope);
+      if (target < 0) target += Math.PI;
+      orient[row + x] = lerpOri(orient[row + x], target, Math.min(1, fade * strength));
+    }
+  }
 }
 
 function estimatePeriod(
@@ -1443,13 +1689,16 @@ function streamlineRidges(
   h: number,
   period: number,
   sepFactor = 1,
+  coreY = h * 0.5,
+  arcCap = false,
 ) {
   const st = stats(enhanced, mask);
   const snapFloor = st.mean - 0.02 * st.std;
   const dsep = period * sepFactor;
-  // Stop when a line is about to cross another line. The test has to stay
-  // inside the seed pitch, or a legal neighbor cuts the trace short.
-  const dtest = Math.min(period * 0.55, dsep * 0.46);
+  const pitch = ridgePitch(period);
+  // Stop a step before a line enters the forbidden band around a neighbor.
+  // The band is inside the seed pitch, so a legal neighbor does not cut the trace.
+  const dtest = Math.min(dsep * 0.74, pitch * 0.8);
   const step = 0.85;
   const committed = new SepGrid(period * 0.42);
   const angAt = (x: number, y: number) => {
@@ -1463,29 +1712,12 @@ function streamlineRidges(
     if (xi < 2 || yi < 2 || xi >= w - 2 || yi >= h - 2) return false;
     return mask[yi * w + xi] === 1;
   };
-  const snapFine = (x: number, y: number, dirx: number, diry: number) => {
-    const center = sample(enhanced, w, h, x, y);
-    if (center < snapFloor) return { x, y };
-    const nx = -diry;
-    const ny = dirx;
-    let best = 0;
-    let bestV = center;
-    const reach = period * 0.18;
-    for (let off = -reach; off <= reach; off += 0.45) {
-      const v = sample(enhanced, w, h, x + nx * off, y + ny * off);
-      if (v > bestV) {
-        bestV = v;
-        best = off;
-      }
-    }
-    return { x: x + nx * best * 0.8, y: y + ny * best * 0.8 };
-  };
   const snapSeed = (x: number, y: number, dirx: number, diry: number) => {
     const nx = -diry;
     const ny = dirx;
     let best = 0;
     let bestV = -Infinity;
-    const reach = period * 0.46;
+    const reach = Math.min(period * 0.16, 2.4);
     for (let off = -reach; off <= reach; off += 0.4) {
       const px = x + nx * off;
       const py = y + ny * off;
@@ -1531,30 +1763,23 @@ function streamlineRidges(
         dx = -dx;
         dy = -dy;
       }
-      vx = vx * 0.25 + dx * 0.75;
-      vy = vy * 0.25 + dy * 0.75;
-      const len = Math.hypot(vx, vy) || 1;
-      vx /= len;
-      vy /= len;
-      let nx = px + vx * step;
-      let ny = py + vy * step;
-      const beside = committed.nearestPoint(nx, ny);
-      if (beside && beside.d < dsep * 0.92 && beside.d > 0.4) {
-        let rx = nx - beside.x;
-        let ry = ny - beside.y;
-        const rl = Math.hypot(rx, ry) || 1;
-        rx /= rl;
-        ry /= rl;
-        const side = Math.abs(rx * vy - ry * vx);
-        if (side > 0.35) {
-          const push = (dsep - beside.d) * 0.22;
-          nx += rx * push;
-          ny += ry * push;
-        }
-      }
-      const next = snapFine(nx, ny, vx, vy);
-      px = next.x;
-      py = next.y;
+      const blend = arcCap && py < coreY ? 0.22 : 0.36;
+      let nvx = vx * (1 - blend) + dx * blend;
+      let nvy = vy * (1 - blend) + dy * blend;
+      const nlen = Math.hypot(nvx, nvy) || 1;
+      nvx /= nlen;
+      nvy /= nlen;
+      const minRadius = arcCap && py < coreY ? Math.max(24, pitch * 2.4) : Math.max(12, pitch * 1.05);
+      const maxTurn = step / minRadius;
+      const turn = clamp(Math.atan2(vx * nvy - vy * nvx, vx * nvx + vy * nvy), -maxTurn, maxTurn);
+      const ct = Math.cos(turn);
+      const stn = Math.sin(turn);
+      const ox = vx;
+      const oy = vy;
+      vx = ox * ct - oy * stn;
+      vy = ox * stn + oy * ct;
+      px += vx * step;
+      py += vy * step;
     }
     return { pts, closed };
   }
@@ -1590,8 +1815,8 @@ function streamlineRidges(
       return;
     }
     accepted++;
-    let smooth = smoothPath(points, 4);
-    smooth = smoothPath(smooth, 2);
+    let smooth = polishPath(points, Math.max(8, Math.round(pitch * 1.2)));
+    smooth = relaxCurvature(smooth, Math.max(12, pitch * 1.05), arcCap ? { y: coreY, radius: Math.max(28, pitch * 2.6) } : undefined);
     smooth = resamplePath(smooth, 2.15);
     raw.push({ points: smooth, closed });
     for (let i = 0; i < smooth.length; i += 2) committed.add(smooth[i]);
@@ -1662,35 +1887,89 @@ function prepare(gray: Float32Array, w: number, h: number, ridgesAreDark: boolea
   const soft = blurSeparable(denoised, w, h, 1);
   const varied = varianceMask(soft, w, h);
   const mask = printSilhouette(gray, varied, w, h, ridgesAreDark, inkDelta);
-  const { orient, coherence } = orientationField(soft, mask, w, h);
+  const field = orientationField(soft, mask, w, h);
   const norm = localNormalize(soft, mask, w, h);
-  const period = estimatePeriod(norm, orient, mask, coherence, w, h);
-  return { mask, orient, coherence, norm, period };
+  const period = estimatePeriod(norm, field.orient, mask, field.coherence, w, h);
+  return { mask, orient: field.orient, coherence: field.coherence, norm, period, coreY: field.coreY, arcCap: field.arcCap };
 }
 
-/** Drop a ridge that spends most of its length on top of a longer one. */
-function enforceSpacing(ridges: Ridge[], period: number, spacingLimit = 0.82, spacingHard = 0.62) {
-  const kept: Ridge[] = [];
-  const grid = new SepGrid(period * 0.45);
-  const sorted = ridges.slice().sort((a, b) => b.length - a.length);
-  const limit = period * spacingLimit;
-  const hardLimit = period * spacingHard;
-  for (const ridge of sorted) {
-    let close = 0;
-    let hard = 0;
-    let samples = 0;
-    const step = Math.max(1, Math.round(ridge.points.length / 80));
-    for (let i = 0; i < ridge.points.length; i += step) {
-      samples++;
-      const nearest = grid.nearest(ridge.points[i].x, ridge.points[i].y);
-      if (nearest < hardLimit) hard++;
-      if (nearest < limit) close++;
-    }
-    if (samples >= 4 && (hard / samples > 0.18 || close / samples > 0.32)) continue;
-    kept.push(ridge);
-    for (let i = 0; i < ridge.points.length; i += 2) grid.add(ridge.points[i]);
+/**
+ * Smooth every ridge, then reject or trim anything that comes within 0.8 of a
+ * line-height pitch of a longer ridge. A crossing that still remains is cut.
+ */
+function settleRidges(ridges: Ridge[], period: number, coreY: number, arcCap = false) {
+  const pitch = ridgePitch(period);
+  const minSep = pitch * 0.8;
+  const minKeep = Math.max(28, period * 2.5);
+  const polished: Ridge[] = [];
+  for (const ridge of ridges) {
+    const ys = ridge.points.map((point) => point.y).sort((a, b) => a - b);
+    const midY = ys[Math.floor(ys.length / 2)] ?? coreY;
+    const radius = arcCap && midY < coreY ? Math.round(pitch * 2.05) : Math.round(pitch * 1.25);
+    let pts = polishPath(ridge.points, radius);
+    pts = relaxCurvature(
+      pts,
+      Math.max(12, pitch * 0.95),
+      arcCap ? { y: coreY - pitch * 0.15, radius: Math.max(30, pitch * 3.2) } : undefined,
+    );
+    pts = resamplePath(pts, 2.2);
+    const next = ridgeFromPoints(pts, false);
+    if (next && next.length >= minKeep) polished.push(next);
   }
-  return kept;
+  const separated = trimSeparation(polished, minSep, minKeep);
+  const opened = cutCrossings(separated, minKeep);
+  const again = trimSeparation(opened, minSep, minKeep);
+  const settled = cutCrossings(again, minKeep);
+  if (process.env.RIDGE_DEBUG) {
+    console.log("settle", ridges.length, "->", settled.length, "sep", minSep.toFixed(2), "coreY", coreY.toFixed(0), "arcs", arcCap);
+  }
+  settled.sort((a, b) => b.length - a.length);
+  return settled;
+}
+
+/**
+ * Above a loop, pull the direction field partway toward nested shallow arcs
+ * and trace again. The loop and the lower print stay on the smoothed field.
+ * A whorl, whose cap is steep, is left alone.
+ */
+function rebuildCap(
+  ridges: Ridge[],
+  enhanced: Float32Array,
+  orient: Float32Array,
+  mask: Uint8Array,
+  w: number,
+  h: number,
+  period: number,
+  sepFactor: number,
+) {
+  const core = printCore(ridges, period);
+  const pitch = ridgePitch(period);
+  let above = 0;
+  let flat = 0;
+  for (const ridge of ridges) {
+    const pts = ridge.points;
+    for (let i = 1; i < pts.length; i += 3) {
+      const y = (pts[i].y + pts[i - 1].y) / 2;
+      if (y > core.y - pitch) continue;
+      const dx = pts[i].x - pts[i - 1].x;
+      const dy = pts[i].y - pts[i - 1].y;
+      let ang = Math.atan2(dy, dx);
+      if (ang < 0) ang += Math.PI;
+      const tilt = Math.min(ang, Math.PI - ang);
+      above++;
+      if (tilt < 0.7) flat++;
+    }
+  }
+  const flatFrac = above ? flat / above : 0;
+  if (above < 12 || flatFrac < 0.68 || flatFrac > 0.8) return ridges;
+  const field = orient.slice();
+  nestArcsAboveCore(field, mask, w, h, core.x, core.y, 0.84);
+  const retraced = streamlineRidges(enhanced, field, mask, w, h, period, sepFactor, core.y, true);
+  const merged = retraced.length > 6 ? settleRidges(joinRidges(retraced, period), period, core.y, true) : [];
+  if (process.env.RIDGE_DEBUG) {
+    console.log("cap", "core", core.x.toFixed(0), core.y.toFixed(0), "flat", flatFrac.toFixed(2), "out", merged.length, "was", ridges.length);
+  }
+  return merged.length >= ridges.length * 0.8 ? merged : ridges;
 }
 
 export function extractFromGray(grayIn: Float32Array, widthIn: number, heightIn: number, options: ExtractOptions = {}): ExtractResult {
@@ -1716,8 +1995,6 @@ export function extractFromGray(grayIn: Float32Array, widthIn: number, heightIn:
 
   const inkDelta = options.profile?.inkDelta ?? 30;
   const sepFactor = options.profile?.sepFactor ?? 1;
-  const spacingLimit = options.profile?.spacingLimit ?? 0.82;
-  const spacingHard = options.profile?.spacingHard ?? 0.62;
   let prep = prepare(gray, w, h, ridgesAreDark, inkDelta);
   for (let pass = 0; pass < 2 && options.rescale !== false; pass++) {
     if (prep.period < 6 || prep.period > 22) break;
@@ -1771,8 +2048,9 @@ export function extractFromGray(grayIn: Float32Array, widthIn: number, heightIn:
     }
   }
 
-  const traced = streamlineRidges(enhanced, prep.orient, prep.mask, w, h, prep.period, sepFactor);
-  let ridges = traced.length > 6 ? enforceSpacing(joinRidges(traced, prep.period), prep.period, spacingLimit, spacingHard) : [];
+  const traced = streamlineRidges(enhanced, prep.orient, prep.mask, w, h, prep.period, sepFactor, prep.coreY, prep.arcCap);
+  let ridges = traced.length > 6 ? settleRidges(joinRidges(traced, prep.period), prep.period, prep.coreY, prep.arcCap) : [];
+  if (ridges.length > 8) ridges = rebuildCap(ridges, enhanced, prep.orient, prep.mask, w, h, prep.period, sepFactor);
 
   let binary = new Uint8Array(w * h);
   let skeleton = binary;
@@ -1789,9 +2067,14 @@ export function extractFromGray(grayIn: Float32Array, widthIn: number, heightIn:
     skeleton = dropSpecks(skeleton, w, h, Math.round(prep.period * 1.6));
     if (ridges.length < 8) {
       const fallback = followRidges(enhanced, prep.orient, prep.mask, prep.coherence, w, h, prep.period);
-      ridges = joinRidges(
-        fallback.length > 4 ? fallback : traceSkeleton(skeleton, w, h, Math.max(8, prep.period * 1.15)),
+      ridges = settleRidges(
+        joinRidges(
+          fallback.length > 4 ? fallback : traceSkeleton(skeleton, w, h, Math.max(8, prep.period * 1.15)),
+          prep.period,
+        ),
         prep.period,
+        prep.coreY,
+        prep.arcCap,
       );
     }
   }

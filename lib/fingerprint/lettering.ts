@@ -631,9 +631,9 @@ function weldPaths(items: LoosePath[], maxGap: number): LoosePath[] {
             if (dist < 1.5 || dist >= bestD) continue;
             const ux = dx / dist;
             const uy = dy / dist;
-            if (dir.x * ux + dir.y * uy < 0.48) continue;
+            if (dir.x * ux + dir.y * uy < 0.82) continue;
             const dirJ = outwardHeading(paths[j].points, endJ);
-            if (dirJ.x * ux + dirJ.y * uy > -0.15) continue;
+            if (dirJ.x * ux + dirJ.y * uy > -0.5) continue;
             bestD = dist;
             bestI = i;
             bestJ = j;
@@ -788,7 +788,7 @@ export function planPortrait(
   });
 
   const source = bodySources(style.names, style.scriptures, lines);
-  const welded = weldPaths(slots, Math.max(period * 8, ridgePitch(period) * 6));
+  const welded = weldPaths(slots, Math.max(period * 1.5, ridgePitch(period) * 0.85));
   const chained = chainPaths(welded, origin);
   const probe = ["Lord", "bless", "you", "and", "keep", "you", "and", "give"];
   const minLen = probe.reduce((sum, word, index) => sum + (index ? gap : 0) + measure(word, "body"), 0) + 6;

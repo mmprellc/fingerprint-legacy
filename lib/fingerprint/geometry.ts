@@ -121,10 +121,7 @@ export function finishRidge(points: Pt[], closed: boolean, minLength: number): R
     if (length < minLength) return null;
     return { points: points.slice(), closed, length };
   }
-  let pts = smoothPath(points, 2);
-  pts = smoothPath(pts, 2);
-  pts = resamplePath(pts, 2.4);
-  pts = rdp(pts, 0.65);
+  let pts = polishPath(points, 8);
   if (closed && pts.length > 3) {
     const a = pts[0];
     const b = pts[pts.length - 1];
@@ -133,6 +130,54 @@ export function finishRidge(points: Pt[], closed: boolean, minLength: number): R
   const length = pathLength(pts);
   if (length < minLength || pts.length < 3) return null;
   return { points: pts, closed, length };
+}
+
+/** Resample, then average across a wide window so a ridge cannot keep a scribble. */
+export function polishPath(points: Pt[], radius: number): Pt[] {
+  if (points.length < 4) return points.map((point) => ({ ...point }));
+  let pts = resamplePath(points, 2.05);
+  const cap = Math.max(2, Math.floor(pts.length / 5));
+  const rad = Math.max(2, Math.min(Math.round(radius), cap, 22));
+  if (pts.length < rad * 2 + 2) return pts;
+  pts = smoothPath(pts, rad);
+  pts = smoothPath(pts, rad);
+  pts = smoothPath(pts, Math.max(2, Math.floor(rad * 0.7)));
+  return resamplePath(pts, 2.2);
+}
+
+/**
+ * Flatten any bend tighter than minRadius by pulling it toward its chord.
+ * Points above `tight.y` use the larger radius, so the cap of the oval
+ * stays a gentle arc while the loop below can still turn.
+ */
+export function relaxCurvature(
+  points: Pt[],
+  minRadius: number,
+  tight?: { y: number; radius: number },
+): Pt[] {
+  if (points.length < 5) return points.map((point) => ({ ...point }));
+  const pts = points.map((point) => ({ x: point.x, y: point.y }));
+  for (let pass = 0; pass < 10; pass++) {
+    for (let i = 1; i < pts.length - 1; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      const c = pts[i + 1];
+      const ab = Math.hypot(b.x - a.x, b.y - a.y);
+      const bc = Math.hypot(c.x - b.x, c.y - b.y);
+      const ds = (ab + bc) / 2;
+      if (ds < 0.25) continue;
+      const turn = Math.atan2((b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x), (b.x - a.x) * (c.x - b.x) + (b.y - a.y) * (c.y - b.y));
+      const radius = ds / Math.max(Math.abs(turn), 1e-4);
+      const need = tight && b.y < tight.y ? Math.max(minRadius, tight.radius) : minRadius;
+      if (radius >= need) continue;
+      const pull = Math.min(0.82, (1 - radius / need) * 0.8);
+      pts[i] = {
+        x: b.x + ((a.x + c.x) / 2 - b.x) * pull,
+        y: b.y + ((a.y + c.y) / 2 - b.y) * pull,
+      };
+    }
+  }
+  return pts;
 }
 
 export function toPathD(points: Pt[]): string {
@@ -220,7 +265,7 @@ export function transformPoints(points: Pt[], m: { tx: number; ty: number; rotat
 
 /** Join ridge endings that face each other across a short gap, so a broken skeleton becomes one continuous path. */
 export function joinRidges(ridges: Ridge[], period: number): Ridge[] {
-  const maxGap = Math.max(12, period * 10);
+  const maxGap = Math.max(18, period * 6);
   type Item = { points: Pt[]; closed: boolean };
   const items: Item[] = ridges
     .filter((ridge) => ridge.points.length > 1)
@@ -260,9 +305,9 @@ export function joinRidges(ridges: Ridge[], period: number): Ridge[] {
             if (dist < 1.5 || dist >= bestD) continue;
             const ux = dx / dist;
             const uy = dy / dist;
-            if (dir.x * ux + dir.y * uy < 0.55) continue;
+            if (dir.x * ux + dir.y * uy < 0.72) continue;
             const dirJ = outward(items[j].points, endJ);
-            if (dirJ.x * ux + dirJ.y * uy > -0.25) continue;
+            if (dirJ.x * ux + dirJ.y * uy > -0.4) continue;
             bestD = dist;
             bestI = i;
             bestJ = j;
@@ -299,4 +344,208 @@ export function escapeXml(value: string) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+type SegmentHit = { a: number; ai: number; b: number; bi: number };
+
+function properCrossing(a: Pt, b: Pt, c: Pt, d: Pt) {
+  const orient = (p: Pt, q: Pt, r: Pt) => (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x);
+  const o1 = orient(a, b, c);
+  const o2 = orient(a, b, d);
+  const o3 = orient(c, d, a);
+  const o4 = orient(c, d, b);
+  if (o1 === 0 || o2 === 0 || o3 === 0 || o4 === 0) return false;
+  return o1 > 0 !== o2 > 0 && o3 > 0 !== o4 > 0;
+}
+
+function ridgeSegments(ridges: { points: Pt[]; closed?: boolean }[]) {
+  const cell = 14;
+  const buckets = new Map<string, { id: number; i: number; a: Pt; b: Pt }[]>();
+  const put = (a: Pt, b: Pt, id: number, i: number) => {
+    const n = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / cell));
+    const seen = new Set<string>();
+    for (let s = 0; s <= n; s++) {
+      const t = s / n;
+      const key = `${Math.floor((a.x + (b.x - a.x) * t) / cell)},${Math.floor((a.y + (b.y - a.y) * t) / cell)}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const bucket = buckets.get(key);
+      const hit = { id, i, a, b };
+      if (bucket) bucket.push(hit);
+      else buckets.set(key, [hit]);
+    }
+  };
+  ridges.forEach((ridge, id) => {
+    const pts = ridge.points;
+    for (let i = 1; i < pts.length; i++) put(pts[i - 1], pts[i], id, i - 1);
+    if (ridge.closed && pts.length > 3 && Math.hypot(pts[0].x - pts[pts.length - 1].x, pts[0].y - pts[pts.length - 1].y) < 6) {
+      put(pts[pts.length - 1], pts[0], id, pts.length - 1);
+    }
+  });
+  return { cell, buckets };
+}
+
+/** Proper intersections of ridge polylines. Shared endpoints are not crossings. */
+export function crossingPairs(ridges: { points: Pt[]; closed?: boolean }[]): SegmentHit[] {
+  const { buckets } = ridgeSegments(ridges);
+  const hits: SegmentHit[] = [];
+  const seen = new Set<string>();
+  for (const [key, bucket] of buckets) {
+    const [cx, cy] = key.split(",").map(Number);
+    const near: { id: number; i: number; a: Pt; b: Pt }[] = [];
+    for (let dy = 0; dy <= 1; dy++) {
+      for (let dx = 0; dx <= 1; dx++) {
+        const extra = buckets.get(`${cx + dx},${cy + dy}`);
+        if (extra) near.push(...extra);
+      }
+    }
+    for (let i = 0; i < bucket.length; i++) {
+      const p = bucket[i];
+      for (let j = 0; j < near.length; j++) {
+        const q = near[j];
+        if (p.id > q.id || (p.id === q.id && p.i >= q.i)) continue;
+        if (p.id === q.id && q.i - p.i <= 2) continue;
+        const pair = `${p.id}:${p.i}-${q.id}:${q.i}`;
+        if (seen.has(pair)) continue;
+        if (!properCrossing(p.a, p.b, q.a, q.b)) continue;
+        seen.add(pair);
+        hits.push({ a: p.id, ai: p.i, b: q.id, bi: q.i });
+      }
+    }
+  }
+  return hits;
+}
+
+export function countCrossings(ridges: { points: Pt[]; closed?: boolean }[]) {
+  return crossingPairs(ridges).length;
+}
+
+function splitDropping(points: Pt[], drop: Set<number>): Pt[][] {
+  if (!drop.size || points.length < 2) return [points.slice()];
+  const parts: Pt[][] = [];
+  let cur: Pt[] = [points[0]];
+  for (let i = 0; i < points.length - 1; i++) {
+    if (drop.has(i)) {
+      if (cur.length > 1) parts.push(cur);
+      cur = [points[i + 1]];
+    } else {
+      cur.push(points[i + 1]);
+    }
+  }
+  if (cur.length > 1) parts.push(cur);
+  return parts;
+}
+
+/** Cut the shorter polyline at every intersection until nothing crosses. */
+export function cutCrossings(ridges: Ridge[], minLength: number): Ridge[] {
+  let current = ridges;
+  for (let pass = 0; pass < 6; pass++) {
+    const hits = crossingPairs(current);
+    if (!hits.length) return current;
+    const cuts = new Map<number, Set<number>>();
+    const mark = (id: number, index: number) => {
+      const set = cuts.get(id) ?? new Set<number>();
+      set.add(index);
+      cuts.set(id, set);
+    };
+    for (const hit of hits) {
+      if (hit.a === hit.b) {
+        mark(hit.a, hit.ai);
+        mark(hit.b, hit.bi);
+        continue;
+      }
+      const shorter = current[hit.a].length <= current[hit.b].length ? hit.a : hit.b;
+      mark(shorter, shorter === hit.a ? hit.ai : hit.bi);
+    }
+    const next: Ridge[] = [];
+    current.forEach((ridge, id) => {
+      const drop = cuts.get(id);
+      if (!drop) {
+        next.push(ridge);
+        return;
+      }
+      for (const points of splitDropping(ridge.points, drop)) {
+        const piece = ridgeFromPoints(points, false);
+        if (piece && piece.length >= minLength) next.push(piece);
+      }
+    });
+    current = next;
+  }
+  return current;
+}
+
+/** Drop every sample that sits within minSep of a longer ridge, and keep the remaining runs. */
+export function trimSeparation(ridges: Ridge[], minSep: number, minLength: number): Ridge[] {
+  const sorted = ridges.slice().sort((a, b) => b.length - a.length);
+  const cell = Math.max(4, minSep * 0.45);
+  const window = Math.ceil(minSep / cell) + 1;
+  const buckets = new Map<string, Pt[]>();
+  const add = (point: Pt) => {
+    const key = `${Math.floor(point.x / cell)},${Math.floor(point.y / cell)}`;
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(point);
+    else buckets.set(key, [point]);
+  };
+  const nearest = (x: number, y: number) => {
+    const gx = Math.floor(x / cell);
+    const gy = Math.floor(y / cell);
+    let best = Infinity;
+    for (let dy = -window; dy <= window; dy++) {
+      for (let dx = -window; dx <= window; dx++) {
+        const bucket = buckets.get(`${gx + dx},${gy + dy}`);
+        if (!bucket) continue;
+        for (const point of bucket) {
+          const d = Math.hypot(point.x - x, point.y - y);
+          if (d < best) best = d;
+        }
+      }
+    }
+    return best;
+  };
+  const kept: Ridge[] = [];
+  for (const ridge of sorted) {
+    const pts = resamplePath(ridge.points, 2);
+    let run: Pt[] = [];
+    const flush = () => {
+      const piece = run.length > 1 ? ridgeFromPoints(run, false) : null;
+      if (piece && piece.length >= minLength) {
+        kept.push(piece);
+        for (const point of run) add(point);
+      }
+      run = [];
+    };
+    for (const point of pts) {
+      if (nearest(point.x, point.y) < minSep) flush();
+      else run.push(point);
+    }
+    flush();
+  }
+  return kept;
+}
+
+/** Turning radii along every ridge. A small radius is a tight scribble. */
+export function curvatureReport(ridges: { points: Pt[] }[]) {
+  const values: number[] = [];
+  for (const ridge of ridges) {
+    const pts = ridge.points;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const a = pts[i - 1];
+      const b = pts[i];
+      const c = pts[i + 1];
+      const ab = Math.hypot(b.x - a.x, b.y - a.y);
+      const bc = Math.hypot(c.x - b.x, c.y - b.y);
+      const ds = (ab + bc) / 2;
+      if (ds < 0.35) continue;
+      const turn = Math.atan2((b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x), (b.x - a.x) * (c.x - b.x) + (b.y - a.y) * (c.y - b.y));
+      values.push(Math.abs(turn) / ds);
+    }
+  }
+  if (!values.length) return { worstRadius: Infinity, p95Radius: Infinity };
+  values.sort((a, b) => a - b);
+  const worst = values[values.length - 1];
+  const p95 = values[Math.min(values.length - 1, Math.floor(values.length * 0.95))];
+  return {
+    worstRadius: worst > 1e-8 ? 1 / worst : Infinity,
+    p95Radius: p95 > 1e-8 ? 1 / p95 : Infinity,
+  };
 }
