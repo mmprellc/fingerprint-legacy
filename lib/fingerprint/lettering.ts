@@ -322,6 +322,15 @@ export function packBodyRuns(
     const text = parts.join(" ");
     if (!acceptable(text)) {
       restore(saved);
+      // Eight words will not fit. One complete short verse still may, and that exemption is already the rule.
+      const verse = versesAt.length ? versesAt[verseAt % versesAt.length] : null;
+      if (verse && verse.length < MIN_BODY_WORDS && verseWord === 0 && legalTake(runIndex, verse, 0) === verse.length) {
+        if (placeVerseWords(verse, verse.length) && acceptable(parts.join(" "))) {
+          packed.push({ points, text: parts.join(" ") });
+          continue;
+        }
+        restore(saved);
+      }
       packed.push({ points, text: "" });
       continue;
     }
@@ -792,8 +801,16 @@ export function planPortrait(
   const chained = chainPaths(welded, origin);
   const probe = ["Lord", "bless", "you", "and", "keep", "you", "and", "give"];
   const minLen = probe.reduce((sum, word, index) => sum + (index ? gap : 0) + measure(word, "body"), 0) + 6;
+  // A complete verse shorter than eight words is already legal. Let it onto a run that can hold it.
+  const shortVerse = source.verses
+    .map((verse) => verse.split(/\s+/).filter(Boolean))
+    .filter((words) => words.length > 0 && words.length < MIN_BODY_WORDS);
+  const verseFloor = shortVerse.reduce((min, words) => {
+    const width = words.reduce((sum, word, index) => sum + (index ? gap : 0) + measure(word, "body"), 0) + 8;
+    return Math.min(min, width);
+  }, minLen);
   const neighborLimit = Math.max(36, ridgePitch(period) * 3.2);
-  const readable = chained.filter((slot) => pathLength(slot.points) >= minLen);
+  const readable = chained.filter((slot) => pathLength(slot.points) >= verseFloor);
   const groups: LoosePath[][] = [];
   let group: LoosePath[] = [];
   for (const item of readable) {

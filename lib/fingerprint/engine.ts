@@ -1,5 +1,5 @@
-import { cutCrossings, finishRidge, joinRidges, polishPath, relaxCurvature, resamplePath, ridgeFromPoints, trimSeparation } from "./geometry";
-import { printCore, ridgePitch } from "./lettering";
+import { countCrossings, crossingPairs, curvatureReport, cutCrossings, finishRidge, joinRidges, polishPath, relaxCurvature, resamplePath, ridgeFromPoints, trimSeparation } from "./geometry";
+import { printCore, ridgePitch, uprightRuns } from "./lettering";
 import type { ExtractDebug, ExtractOptions, ExtractResult, Pt, Ridge } from "./types";
 
 const TARGET_PERIOD = 12;
@@ -532,7 +532,7 @@ function lerpOri(a: number, b: number, t: number) {
   return blockAngle(c, s);
 }
 
-function orientationField(src: Float32Array, mask: Uint8Array, w: number, h: number) {
+function orientationField(src: Float32Array, mask: Uint8Array, w: number, h: number, mode: "standard" | "whorl" = "standard") {
   const gx = new Float32Array(w * h);
   const gy = new Float32Array(w * h);
   for (let y = 1; y < h - 1; y++) {
@@ -651,21 +651,28 @@ function orientationField(src: Float32Array, mask: Uint8Array, w: number, h: num
   const core = findLoopCore(curC, curS, inside, bw, bh);
   const capFlat = capHorizontal(curC, curS, inside, core.bx, core.by, bw);
   if (process.env.RIDGE_DEBUG) console.log("core", core.found, core.kind, "flat", capFlat.toFixed(2), "by", core.by.toFixed(0));
-  const heavy = blurDoubled(curC, curS, scoh, bw, bh, 4);
-  const heavyAgain = blurDoubled(heavy.cos, heavy.sin, heavy.coh, bw, bh, 3);
-  const blendedC = new Float32Array(bw * bh);
-  const blendedS = new Float32Array(bw * bh);
-  for (let i = 0; i < blendedC.length; i++) {
-    const bx = i % bw;
-    const by = Math.floor(i / bw);
-    const dist = Math.hypot(bx - core.bx, by - core.by);
-    // Keep the loop itself. Everywhere else, use the large-radius field.
-    const useHeavy = smoothstep01((dist - 2.4) / 3.2);
-    blendedC[i] = curC[i] * (1 - useHeavy) + heavyAgain.cos[i] * useHeavy;
-    blendedS[i] = curS[i] * (1 - useHeavy) + heavyAgain.sin[i] * useHeavy;
+  if (mode === "whorl") {
+    // Follow the spiral. The loop's wide blur flattens a whorl into short rings.
+    const once = blurDoubled(curC, curS, scoh, bw, bh, 3);
+    curC = once.cos;
+    curS = once.sin;
+  } else {
+    const heavy = blurDoubled(curC, curS, scoh, bw, bh, 4);
+    const heavyAgain = blurDoubled(heavy.cos, heavy.sin, heavy.coh, bw, bh, 3);
+    const blendedC = new Float32Array(bw * bh);
+    const blendedS = new Float32Array(bw * bh);
+    for (let i = 0; i < blendedC.length; i++) {
+      const bx = i % bw;
+      const by = Math.floor(i / bw);
+      const dist = Math.hypot(bx - core.bx, by - core.by);
+      // Keep the loop itself. Everywhere else, use the large-radius field.
+      const useHeavy = smoothstep01((dist - 2.4) / 3.2);
+      blendedC[i] = curC[i] * (1 - useHeavy) + heavyAgain.cos[i] * useHeavy;
+      blendedS[i] = curS[i] * (1 - useHeavy) + heavyAgain.sin[i] * useHeavy;
+    }
+    curC = blendedC;
+    curS = blendedS;
   }
-  curC = blendedC;
-  curS = blendedS;
   const orient = new Float32Array(w * h);
   const coherence = new Float32Array(w * h);
   for (let y = 0; y < h; y++) {
@@ -1691,6 +1698,7 @@ function streamlineRidges(
   sepFactor = 1,
   coreY = h * 0.5,
   arcCap = false,
+  whorlSmooth = false,
 ) {
   const st = stats(enhanced, mask);
   const snapFloor = st.mean - 0.02 * st.std;
@@ -1763,7 +1771,7 @@ function streamlineRidges(
         dx = -dx;
         dy = -dy;
       }
-      const blend = arcCap && py < coreY ? 0.22 : 0.36;
+      const blend = arcCap && py < coreY ? 0.22 : whorlSmooth ? 0.24 : 0.36;
       let nvx = vx * (1 - blend) + dx * blend;
       let nvy = vy * (1 - blend) + dy * blend;
       const nlen = Math.hypot(nvx, nvy) || 1;
@@ -1815,7 +1823,8 @@ function streamlineRidges(
       return;
     }
     accepted++;
-    let smooth = polishPath(points, Math.max(8, Math.round(pitch * 1.2)));
+    const polish = whorlSmooth ? Math.max(4, Math.min(Math.round(pitch * 0.7), Math.round(pathLengthOf(points) / 14))) : Math.max(8, Math.round(pitch * 1.2));
+    let smooth = polishPath(points, polish);
     smooth = relaxCurvature(smooth, Math.max(12, pitch * 1.05), arcCap ? { y: coreY, radius: Math.max(28, pitch * 2.6) } : undefined);
     smooth = resamplePath(smooth, 2.15);
     raw.push({ points: smooth, closed });
@@ -1890,14 +1899,14 @@ function prepare(gray: Float32Array, w: number, h: number, ridgesAreDark: boolea
   const field = orientationField(soft, mask, w, h);
   const norm = localNormalize(soft, mask, w, h);
   const period = estimatePeriod(norm, field.orient, mask, field.coherence, w, h);
-  return { mask, orient: field.orient, coherence: field.coherence, norm, period, coreY: field.coreY, arcCap: field.arcCap };
+  return { mask, orient: field.orient, coherence: field.coherence, norm, period, coreY: field.coreY, arcCap: field.arcCap, soft };
 }
 
 /**
  * Smooth every ridge, then reject or trim anything that comes within 0.8 of a
  * line-height pitch of a longer ridge. A crossing that still remains is cut.
  */
-function settleRidges(ridges: Ridge[], period: number, coreY: number, arcCap = false) {
+function settleRidges(ridges: Ridge[], period: number, coreY: number, arcCap = false, whorlSmooth = false) {
   const pitch = ridgePitch(period);
   const minSep = pitch * 0.8;
   const minKeep = Math.max(28, period * 2.5);
@@ -1905,7 +1914,11 @@ function settleRidges(ridges: Ridge[], period: number, coreY: number, arcCap = f
   for (const ridge of ridges) {
     const ys = ridge.points.map((point) => point.y).sort((a, b) => a - b);
     const midY = ys[Math.floor(ys.length / 2)] ?? coreY;
-    const radius = arcCap && midY < coreY ? Math.round(pitch * 2.05) : Math.round(pitch * 1.25);
+    const radius = whorlSmooth
+      ? Math.max(4, Math.min(Math.round(pitch * 0.7), Math.round(ridge.length / 14)))
+      : arcCap && midY < coreY
+        ? Math.round(pitch * 2.05)
+        : Math.round(pitch * 1.25);
     let pts = polishPath(ridge.points, radius);
     pts = relaxCurvature(
       pts,
@@ -1932,16 +1945,7 @@ function settleRidges(ridges: Ridge[], period: number, coreY: number, arcCap = f
  * and trace again. The loop and the lower print stay on the smoothed field.
  * A whorl, whose cap is steep, is left alone.
  */
-function rebuildCap(
-  ridges: Ridge[],
-  enhanced: Float32Array,
-  orient: Float32Array,
-  mask: Uint8Array,
-  w: number,
-  h: number,
-  period: number,
-  sepFactor: number,
-) {
+function capFlatness(ridges: Ridge[], period: number) {
   const core = printCore(ridges, period);
   const pitch = ridgePitch(period);
   let above = 0;
@@ -1960,7 +1964,433 @@ function rebuildCap(
       if (tilt < 0.7) flat++;
     }
   }
-  const flatFrac = above ? flat / above : 0;
+  return { core, above, flatFrac: above ? flat / above : 0 };
+}
+
+/** A loop cap is mostly shallow. A whorl wraps. An arch does neither. */
+function patternOf(ridges: Ridge[], period: number): "loop" | "whorl" | "arch" {
+  const { above, flatFrac } = capFlatness(ridges, period);
+  if (above >= 12 && flatFrac >= 0.68 && flatFrac <= 0.8) return "loop";
+  let wrapped = 0;
+  for (const ridge of ridges) {
+    const pts = ridge.points;
+    let turn = 0;
+    for (let i = 2; i < pts.length; i += 2) {
+      const a1 = Math.atan2(pts[i - 1].y - pts[i - 2].y, pts[i - 1].x - pts[i - 2].x);
+      const a2 = Math.atan2(pts[i].y - pts[i - 1].y, pts[i].x - pts[i - 1].x);
+      turn += Math.atan2(Math.sin(a2 - a1), Math.cos(a2 - a1));
+    }
+    if (Math.abs(turn) > 2.2) wrapped++;
+  }
+  return wrapped >= 3 ? "whorl" : "arch";
+}
+
+function longestUpright(ridge: Ridge) {
+  let best = 0;
+  for (const run of uprightRuns(ridge.points)) best = Math.max(best, pathLengthOf(run));
+  return best;
+}
+
+function uprightMass(ridges: Ridge[], minRun: number) {
+  let total = 0;
+  for (const ridge of ridges) {
+    for (const run of uprightRuns(ridge.points)) {
+      const len = pathLengthOf(run);
+      if (len >= minRun) total += len;
+    }
+  }
+  return total;
+}
+
+/** Pull only the bends that would fail the curvature check. Smooth ridges stay put. */
+function relaxToFloor(ridges: Ridge[], period: number) {
+  const pitch = ridgePitch(period);
+  const curve = curvatureReport(ridges);
+  if (curve.worstRadius >= pitch * 0.9 && curve.p95Radius >= pitch * 1.15) return ridges;
+  const minKeep = Math.max(28, period * 2.5);
+  const need = Math.max(12, pitch * 0.95);
+  const next: Ridge[] = [];
+  for (const ridge of ridges) {
+    let pts = relaxCurvature(ridge.points, need, undefined, true);
+    pts = resamplePath(pts, 2.2);
+    pts = relaxCurvature(pts, need, undefined, true);
+    const piece = ridgeFromPoints(pts, false);
+    if (piece && piece.length >= minKeep) next.push(piece);
+  }
+  let opened = cutCrossings(next, minKeep);
+  opened = opened.map((ridge) => {
+    const pts = relaxCurvature(ridge.points, need, undefined, true);
+    return ridgeFromPoints(pts, false) ?? ridge;
+  }).filter((ridge) => ridge.length >= minKeep);
+  const after = curvatureReport(opened);
+  if (process.env.RIDGE_DEBUG && after.worstRadius < pitch * 0.9) {
+    console.log("relax-floor", "worst", after.worstRadius.toFixed(1), "cross", countCrossings(opened), "n", opened.length, "was", ridges.length);
+  }
+  if (countCrossings(opened) !== 0) return ridges;
+  if (after.worstRadius < pitch * 0.9 || after.p95Radius < pitch * 1.15) return ridges;
+  return opened.length >= ridges.length * 0.8 ? opened : ridges;
+}
+
+function tipHeading(points: Pt[], end: 0 | 1) {
+  const a = end === 0 ? points[0] : points[points.length - 1];
+  const b = end === 0 ? points[Math.min(points.length - 1, 4)] : points[Math.max(0, points.length - 5)];
+  const len = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+  return { x: a.x, y: a.y, dx: (a.x - b.x) / len, dy: (a.y - b.y) / len };
+}
+
+/**
+ * Grow a short fragment along the orientation until it can hold a line of text,
+ * stopping at the 0.8-pitch floor around any ridge that is already long enough.
+ */
+function extendFragments(
+  ridges: Ridge[],
+  orient: Float32Array,
+  mask: Uint8Array,
+  w: number,
+  h: number,
+  period: number,
+  whorlSmooth: boolean,
+) {
+  const pitch = ridgePitch(period);
+  const minSep = pitch * 0.8;
+  const useful = Math.max(96, pitch * 7.2);
+  const keepers = ridges.filter((ridge) => longestUpright(ridge) >= useful);
+  const fragments = ridges.filter((ridge) => longestUpright(ridge) < useful);
+  if (!fragments.length) return ridges;
+  const occupied = new SepGrid(minSep * 0.45);
+  for (const ridge of keepers) for (let i = 0; i < ridge.points.length; i += 2) occupied.add(ridge.points[i]);
+  const inside = (x: number, y: number) => {
+    const xi = Math.round(x);
+    const yi = Math.round(y);
+    if (xi < 2 || yi < 2 || xi >= w - 2 || yi >= h - 2) return false;
+    return mask[yi * w + xi] === 1;
+  };
+  const angAt = (x: number, y: number) => orient[clamp(Math.round(y), 0, h - 1) * w + clamp(Math.round(x), 0, w - 1)];
+  const grow = (sx: number, sy: number, vx0: number, vy0: number) => {
+    const pts: Pt[] = [];
+    let px = sx;
+    let py = sy;
+    let vx = vx0;
+    let vy = vy0;
+    const step = 0.85;
+    for (let i = 0; i < Math.round((w + h) * 1.4); i++) {
+      px += vx * step;
+      py += vy * step;
+      if (!inside(px, py)) break;
+      if (occupied.nearest(px, py) < minSep) break;
+      pts.push({ x: px, y: py });
+      const theta = angAt(px, py);
+      let dx = Math.cos(theta);
+      let dy = Math.sin(theta);
+      if (dx * vx + dy * vy < 0) {
+        dx = -dx;
+        dy = -dy;
+      }
+      const blend = whorlSmooth ? 0.24 : 0.36;
+      let nvx = vx * (1 - blend) + dx * blend;
+      let nvy = vy * (1 - blend) + dy * blend;
+      const nlen = Math.hypot(nvx, nvy) || 1;
+      nvx /= nlen;
+      nvy /= nlen;
+      const maxTurn = step / Math.max(12, pitch * 1.05);
+      const turn = clamp(Math.atan2(vx * nvy - vy * nvx, vx * nvx + vy * nvy), -maxTurn, maxTurn);
+      const ct = Math.cos(turn);
+      const stn = Math.sin(turn);
+      const ox = vx;
+      const oy = vy;
+      vx = ox * ct - oy * stn;
+      vy = ox * stn + oy * ct;
+    }
+    return pts;
+  };
+  const used = new Set<number>();
+  const added: Ridge[] = [];
+  fragments.forEach((fragment, index) => {
+    if (used.has(index) || fragment.points.length < 4) return;
+    let best: Pt[] | null = null;
+    let bestRun = longestUpright(fragment);
+    for (const end of [0, 1] as const) {
+      const tip = tipHeading(fragment.points, end);
+      const extra = grow(tip.x, tip.y, tip.dx, tip.dy);
+      if (pathLengthOf(extra) < 12) continue;
+      const pts = end === 1 ? fragment.points.concat(extra) : extra.reverse().concat(fragment.points);
+      let smooth = polishPath(pts, whorlSmooth ? Math.max(4, Math.round(pitch * 0.7)) : Math.max(8, Math.round(pitch * 1.05)));
+      smooth = relaxCurvature(smooth, Math.max(12, pitch * 0.95), undefined, true);
+      smooth = resamplePath(smooth, 2.2);
+      const run = longestUpright({ points: smooth, closed: false, length: pathLengthOf(smooth) });
+      if (run > bestRun) {
+        bestRun = run;
+        best = smooth;
+      }
+    }
+    if (!best || bestRun < useful) return;
+    const curve = curvatureReport([{ points: best }]);
+    if (curve.worstRadius < pitch * 0.9 || curve.p95Radius < pitch * 1.15) return;
+    const ridge = ridgeFromPoints(best, false);
+    if (!ridge) return;
+    if (crossingPairs([...keepers, ...added, ridge]).some((hit) => hit.a === keepers.length + added.length || hit.b === keepers.length + added.length)) return;
+    used.add(index);
+    added.push(ridge);
+    for (let i = 0; i < ridge.points.length; i += 2) occupied.add(ridge.points[i]);
+  });
+  if (!added.length) return ridges;
+  const kept = fragments.filter((_, index) => !used.has(index));
+  const merged = [...keepers, ...kept, ...added];
+  if (countCrossings(merged) !== 0) return ridges;
+  if (process.env.RIDGE_DEBUG) console.log("extend", added.length, "from", fragments.length);
+  return merged;
+}
+
+/**
+ * After the 0.8-pitch trim, seed a new ridge through the largest remaining hole.
+ * The seed stops at the floor, so it never crowds a ridge that can already hold text.
+ * Short leftovers do not count as covering the hole; a longer seed replaces them.
+ */
+function fillGaps(
+  ridges: Ridge[],
+  orient: Float32Array,
+  mask: Uint8Array,
+  w: number,
+  h: number,
+  period: number,
+  whorlSmooth: boolean,
+) {
+  ridges = extendFragments(ridges, orient, mask, w, h, period, whorlSmooth);
+  const pitch = ridgePitch(period);
+  const minSep = pitch * 0.8;
+  const minKeep = Math.max(28, period * 2.5);
+  const minRun = Math.max(74, pitch * 5.6);
+  let current = ridges;
+  const blocked: Pt[] = [];
+  let attempts = 0;
+  let rejected = "";
+
+  const angAt = (x: number, y: number) => orient[clamp(Math.round(y), 0, h - 1) * w + clamp(Math.round(x), 0, w - 1)];
+  const inside = (x: number, y: number) => {
+    const xi = Math.round(x);
+    const yi = Math.round(y);
+    if (xi < 2 || yi < 2 || xi >= w - 2 || yi >= h - 2) return false;
+    return mask[yi * w + xi] === 1;
+  };
+
+  while (attempts < 12 && current.length < 160) {
+    attempts++;
+    const keepers = current.filter((ridge) => longestUpright(ridge) >= minRun);
+    const cell = Math.max(4, minSep * 0.45);
+    const look = Math.ceil((minSep * 3) / cell) + 1;
+    const buckets = new Map<string, Pt[]>();
+    const addPt = (point: Pt) => {
+      const key = `${Math.floor(point.x / cell)},${Math.floor(point.y / cell)}`;
+      const bucket = buckets.get(key);
+      if (bucket) bucket.push(point);
+      else buckets.set(key, [point]);
+    };
+    for (const ridge of keepers) for (let i = 0; i < ridge.points.length; i += 2) addPt(ridge.points[i]);
+    const nearest = (x: number, y: number) => {
+      const gx = Math.floor(x / cell);
+      const gy = Math.floor(y / cell);
+      let best = minSep * 3;
+      for (let dy = -look; dy <= look; dy++) {
+        for (let dx = -look; dx <= look; dx++) {
+          const bucket = buckets.get(`${gx + dx},${gy + dy}`);
+          if (!bucket) continue;
+          for (const point of bucket) {
+            const d = Math.hypot(point.x - x, point.y - y);
+            if (d < best) best = d;
+          }
+        }
+      }
+      return best;
+    };
+    let seed: Pt | null = null;
+    let seedD = minSep;
+    for (let y = 4; y < h - 4; y += 4) {
+      for (let x = 4; x < w - 4; x += 4) {
+        if (!mask[y * w + x]) continue;
+        if (blocked.some((point) => Math.hypot(point.x - x, point.y - y) < pitch * 2.4)) continue;
+        const d = nearest(x, y);
+        if (d > seedD) {
+          seedD = d;
+          seed = { x, y };
+        }
+      }
+    }
+    if (!seed) {
+      rejected += "noseed ";
+      break;
+    }
+
+    const occupied = new SepGrid(minSep * 0.45);
+    for (const ridge of keepers) for (let i = 0; i < ridge.points.length; i += 2) occupied.add(ridge.points[i]);
+    const traceHeading = (sx: number, sy: number, sign: number) => {
+      const pts: Pt[] = [];
+      const own = new SepGrid(minSep * 0.45);
+      const lag: Pt[] = [];
+      let px = sx;
+      let py = sy;
+      const theta0 = angAt(px, py);
+      let vx = Math.cos(theta0) * sign;
+      let vy = Math.sin(theta0) * sign;
+      const limit = Math.round((w + h) * 2.2);
+      const step = 0.85;
+      for (let i = 0; i < limit; i++) {
+        if (!inside(px, py)) break;
+        const nearOwn = pts.length > Math.round(period * 6) ? own.nearest(px, py) : Infinity;
+        const nearOther = i > 4 ? occupied.nearest(px, py) : Infinity;
+        if (nearOther < minSep) break;
+        if (nearOwn < minSep * 0.82) break;
+        const point = { x: px, y: py };
+        pts.push(point);
+        lag.push(point);
+        if (lag.length > 16) own.add(lag.shift()!);
+        const theta = angAt(px, py);
+        let dx = Math.cos(theta);
+        let dy = Math.sin(theta);
+        if (dx * vx + dy * vy < 0) {
+          dx = -dx;
+          dy = -dy;
+        }
+        const blend = whorlSmooth ? 0.24 : 0.36;
+        let nvx = vx * (1 - blend) + dx * blend;
+        let nvy = vy * (1 - blend) + dy * blend;
+        const nlen = Math.hypot(nvx, nvy) || 1;
+        nvx /= nlen;
+        nvy /= nlen;
+        const minRadius = Math.max(12, pitch * 1.05);
+        const maxTurn = step / minRadius;
+        const turn = clamp(Math.atan2(vx * nvy - vy * nvx, vx * nvx + vy * nvy), -maxTurn, maxTurn);
+        const ct = Math.cos(turn);
+        const stn = Math.sin(turn);
+        const ox = vx;
+        const oy = vy;
+        vx = ox * ct - oy * stn;
+        vy = ox * stn + oy * ct;
+        px += vx * step;
+        py += vy * step;
+      }
+      return pts;
+    };
+    const forward = traceHeading(seed.x, seed.y, 1);
+    const back = traceHeading(seed.x, seed.y, -1);
+    let pts = [...back.reverse(), ...forward.slice(1)];
+    if (pathLengthOf(pts) < minRun) {
+      blocked.push(seed);
+      rejected += `short${Math.round(pathLengthOf(pts))} `;
+      continue;
+    }
+    const polish = whorlSmooth ? Math.max(4, Math.min(Math.round(pitch * 0.7), Math.round(pathLengthOf(pts) / 14))) : Math.max(8, Math.round(pitch * 1.2));
+    pts = polishPath(pts, polish);
+    pts = relaxCurvature(pts, Math.max(12, pitch * 1.05), undefined, true);
+    pts = resamplePath(pts, 2.2);
+    const seeded = ridgeFromPoints(pts, false);
+    if (!seeded || longestUpright(seeded) < minRun) {
+      blocked.push(seed);
+      rejected += `up${seeded ? Math.round(longestUpright(seeded)) : 0} `;
+      continue;
+    }
+    const curve = curvatureReport([seeded]);
+    if (curve.worstRadius < pitch * 0.9 || curve.p95Radius < pitch * 1.15) {
+      blocked.push(seed);
+      rejected += `curve${curve.worstRadius.toFixed(0)} `;
+      continue;
+    }
+    const fragments = current.filter((ridge) => longestUpright(ridge) < minRun);
+    if (crossingPairs([...keepers, seeded]).some((hit) => hit.a === keepers.length || hit.b === keepers.length)) {
+      blocked.push(seed);
+      rejected += "cross ";
+      continue;
+    }
+    const samples = resamplePath(seeded.points, 2);
+    const pieces: Pt[][] = [];
+    let runPts: Pt[] = [];
+    const flush = () => {
+      if (runPts.length > 1) pieces.push(runPts);
+      runPts = [];
+    };
+    for (const point of samples) {
+      if (nearest(point.x, point.y) < minSep) flush();
+      else runPts.push(point);
+    }
+    flush();
+    const fresh: Ridge[] = [];
+    for (const piece of pieces) {
+      const smoothed = relaxCurvature(piece, Math.max(12, pitch * 1.05), undefined, true);
+      const ridge = ridgeFromPoints(resamplePath(smoothed, 2.2), false);
+      if (!ridge || longestUpright(ridge) < minRun) continue;
+      const pieceCurve = curvatureReport([ridge]);
+      if (pieceCurve.worstRadius < pitch * 0.9 || pieceCurve.p95Radius < pitch * 1.15) continue;
+      fresh.push(ridge);
+    }
+    if (!fresh.length) {
+      blocked.push(seed);
+      rejected += "clip ";
+      continue;
+    }
+    const freshGrid = new Map<string, Pt[]>();
+    const addFresh = (point: Pt) => {
+      const key = `${Math.floor(point.x / cell)},${Math.floor(point.y / cell)}`;
+      const bucket = freshGrid.get(key);
+      if (bucket) bucket.push(point);
+      else freshGrid.set(key, [point]);
+    };
+    for (const ridge of fresh) for (let i = 0; i < ridge.points.length; i += 2) addFresh(ridge.points[i]);
+    const nearFresh = (x: number, y: number) => {
+      const gx = Math.floor(x / cell);
+      const gy = Math.floor(y / cell);
+      for (let dy = -look; dy <= look; dy++) {
+        for (let dx = -look; dx <= look; dx++) {
+          const bucket = freshGrid.get(`${gx + dx},${gy + dy}`);
+          if (!bucket) continue;
+          for (const point of bucket) if (Math.hypot(point.x - x, point.y - y) < minSep) return true;
+        }
+      }
+      return false;
+    };
+    const keptFrags = fragments.filter((frag) => !frag.points.some((point, index) => index % 3 === 0 && nearFresh(point.x, point.y)));
+    let merged = [...keepers, ...keptFrags, ...fresh];
+    const hits = crossingPairs(merged);
+    if (hits.length) {
+      const fragStart = keepers.length;
+      const freshStart = keepers.length + keptFrags.length;
+      const drop = new Set<number>();
+      let keeperHit = false;
+      for (const hit of hits) {
+        if (hit.a < fragStart || hit.b < fragStart) keeperHit = true;
+        if (hit.a >= fragStart && hit.a < freshStart) drop.add(hit.a);
+        if (hit.b >= fragStart && hit.b < freshStart) drop.add(hit.b);
+      }
+      if (keeperHit || countCrossings(merged.filter((_, index) => !drop.has(index))) !== 0) {
+        blocked.push(seed);
+        rejected += "cross ";
+        continue;
+      }
+      merged = merged.filter((_, index) => !drop.has(index));
+    }
+    const bent = curvatureReport(merged);
+    if (bent.worstRadius < pitch * 0.9 || bent.p95Radius < pitch * 1.15) {
+      blocked.push(seed);
+      rejected += "relax ";
+      continue;
+    }
+    current = merged;
+    if (process.env.RIDGE_DEBUG) console.log("fill", attempts, "run", longestUpright(seeded).toFixed(0), "ridges", current.length);
+  }
+  if (process.env.RIDGE_DEBUG) console.log("fill-done", rejected || "ok");
+  return current;
+}
+
+function rebuildCap(
+  ridges: Ridge[],
+  enhanced: Float32Array,
+  orient: Float32Array,
+  mask: Uint8Array,
+  w: number,
+  h: number,
+  period: number,
+  sepFactor: number,
+) {
+  const { core, above, flatFrac } = capFlatness(ridges, period);
+  if (process.env.RIDGE_DEBUG) console.log("flatFrac", flatFrac.toFixed(3), "above", above);
   if (above < 12 || flatFrac < 0.68 || flatFrac > 0.8) return ridges;
   const field = orient.slice();
   nestArcsAboveCore(field, mask, w, h, core.x, core.y, 0.84);
@@ -2050,7 +2480,21 @@ export function extractFromGray(grayIn: Float32Array, widthIn: number, heightIn:
 
   const traced = streamlineRidges(enhanced, prep.orient, prep.mask, w, h, prep.period, sepFactor, prep.coreY, prep.arcCap);
   let ridges = traced.length > 6 ? settleRidges(joinRidges(traced, prep.period), prep.period, prep.coreY, prep.arcCap) : [];
-  if (ridges.length > 8) ridges = rebuildCap(ridges, enhanced, prep.orient, prep.mask, w, h, prep.period, sepFactor);
+  const pattern = ridges.length > 8 ? patternOf(ridges, prep.period) : "arch";
+  if (pattern === "loop" && ridges.length > 8) {
+    ridges = rebuildCap(ridges, enhanced, prep.orient, prep.mask, w, h, prep.period, sepFactor);
+  } else if (pattern === "whorl" && ridges.length > 8) {
+    const field = orientationField(prep.soft, prep.mask, w, h, "whorl");
+    const whorlInk = gabor(prep.norm, field.orient, prep.mask, w, h, prep.period);
+    const retraced = streamlineRidges(whorlInk, field.orient, prep.mask, w, h, prep.period, sepFactor, field.coreY, false, true);
+    const next = retraced.length > 6 ? settleRidges(joinRidges(retraced, prep.period), prep.period, field.coreY, false, true) : [];
+    const floor = Math.max(130, ridgePitch(prep.period) * 9);
+    const useNext = next.length >= 8 && uprightMass(next, floor) >= uprightMass(ridges, floor);
+    ridges = relaxToFloor(useNext ? next : ridges, prep.period);
+    ridges = fillGaps(ridges, useNext ? field.orient : prep.orient, prep.mask, w, h, prep.period, true);
+  } else if (ridges.length > 8) {
+    ridges = fillGaps(ridges, prep.orient, prep.mask, w, h, prep.period, false);
+  }
 
   let binary = new Uint8Array(w * h);
   let skeleton = binary;

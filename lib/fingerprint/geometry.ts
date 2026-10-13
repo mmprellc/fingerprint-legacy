@@ -154,10 +154,11 @@ export function relaxCurvature(
   points: Pt[],
   minRadius: number,
   tight?: { y: number; radius: number },
+  firm = false,
 ): Pt[] {
   if (points.length < 5) return points.map((point) => ({ ...point }));
   const pts = points.map((point) => ({ x: point.x, y: point.y }));
-  for (let pass = 0; pass < 10; pass++) {
+  for (let pass = 0; pass < (firm ? 18 : 10); pass++) {
     for (let i = 1; i < pts.length - 1; i++) {
       const a = pts[i - 1];
       const b = pts[i];
@@ -170,7 +171,7 @@ export function relaxCurvature(
       const radius = ds / Math.max(Math.abs(turn), 1e-4);
       const need = tight && b.y < tight.y ? Math.max(minRadius, tight.radius) : minRadius;
       if (radius >= need) continue;
-      const pull = Math.min(0.82, (1 - radius / need) * 0.8);
+      const pull = firm ? Math.min(0.9, 1 - radius / need) : Math.min(0.82, (1 - radius / need) * 0.8);
       pts[i] = {
         x: b.x + ((a.x + c.x) / 2 - b.x) * pull,
         y: b.y + ((a.y + c.y) / 2 - b.y) * pull,
