@@ -1,4 +1,6 @@
-import { fontSizeFor, RIDGE_DIVIDER } from "./lettering";
+import { loadRidgeFace, ridgeCaseReport } from "./glyphs";
+import { edgeTypeScale, fontSizeFor, RIDGE_DIVIDER, roleScale, type RidgeRole } from "./lettering";
+import { fontById } from "./preview";
 import type { PrintStyle } from "./types";
 
 export type Check = {
@@ -101,7 +103,133 @@ export function auditLayout(svg: string, style: PrintStyle, period: number): Che
     const spread = nameSpread(bodyRunTexts(svg), names);
     checks.push(spread);
   }
+  checks.push(uniformSize(svg));
+  checks.push(sourceCase(svg, style));
+  checks.push(letterCase(style, period));
   return checks;
+}
+
+const ROLES: RidgeRole[] = ["body", "core", "secondary"];
+
+/** Every ridge, including the dedications, is set at the same size. */
+function uniformSize(svg: string): Check {
+  const sizes: number[] = [];
+  const re = /<text\b([^>]*)>/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(svg))) {
+    if (!/\bridge\b/.test(match[1])) continue;
+    const size = match[1].match(/\bfont-size="([\d.]+)"/);
+    if (!size) {
+      return { id: "uniform-size", label: "One type size", passed: false, detail: "A ridge is missing its font size." };
+    }
+    sizes.push(Number(size[1]));
+  }
+  const drifted = ROLES.some((role) => roleScale(role) !== 1) || edgeTypeScale(0) !== 1 || edgeTypeScale(1) !== 1;
+  if (drifted) {
+    return {
+      id: "uniform-size",
+      label: "One type size",
+      passed: false,
+      detail: "Ridge type is still scaled by role or by position on the print.",
+    };
+  }
+  if (!sizes.length) {
+    return { id: "uniform-size", label: "One type size", passed: true, detail: "No ridge text to size." };
+  }
+  const first = sizes[0];
+  const off = sizes.find((size) => Math.abs(size - first) > 0.02);
+  if (off !== undefined) {
+    return {
+      id: "uniform-size",
+      label: "One type size",
+      passed: false,
+      detail: `Ridge text uses ${first.toFixed(2)}px and ${off.toFixed(2)}px.`,
+    };
+  }
+  return {
+    id: "uniform-size",
+    label: "One type size",
+    passed: true,
+    detail: `Every ridge is ${first.toFixed(2)}px.`,
+  };
+}
+
+function addTokens(exact: Set<string>, folded: Map<string, Set<string>>, text: string) {
+  for (const word of text.split(/\s+/)) {
+    if (!word || word === RIDGE_DIVIDER) continue;
+    exact.add(word);
+    const key = word.toLocaleLowerCase();
+    const forms = folded.get(key);
+    if (forms) forms.add(word);
+    else folded.set(key, new Set([word]));
+  }
+}
+
+/**
+ * Ridge words must be the source text, including case. A word that only matches
+ * after ignoring case is a capitalization change, not a different word.
+ */
+function sourceCase(svg: string, style: PrintStyle): Check {
+  const exact = new Set<string>();
+  const folded = new Map<string, Set<string>>();
+  for (const verse of style.scriptures ?? []) addTokens(exact, folded, verse);
+  for (const name of style.names ?? []) addTokens(exact, folded, name);
+  addTokens(exact, folded, phrase(style.centerName, style.centerDetail));
+  addTokens(exact, folded, phrase(style.secondaryName, style.secondaryDetail));
+
+  for (const word of ridgeWords(svg)) {
+    if (word === RIDGE_DIVIDER || exact.has(word)) continue;
+    const forms = folded.get(word.toLocaleLowerCase());
+    if (forms && forms.size) {
+      const written = [...forms].map((form) => `“${form}”`).join(" or ");
+      return {
+        id: "source-case",
+        label: "Source capitalization",
+        passed: false,
+        detail: `“${word}” should be ${written}, as written in the source.`,
+      };
+    }
+    return {
+      id: "source-case",
+      label: "Source capitalization",
+      passed: false,
+      detail: `“${word}” is not in the source text.`,
+    };
+  }
+  return {
+    id: "source-case",
+    label: "Source capitalization",
+    passed: true,
+    detail: "Ridge words keep the capitalization of the source.",
+  };
+}
+
+function ridgeWords(svg: string) {
+  return ridgeRunTexts(svg).flatMap((text) => text.split(/\s+/).filter(Boolean));
+}
+
+function ridgeRunTexts(svg: string) {
+  const texts: string[] = [];
+  const re = /<text\b([^>]*)>([\s\S]*?)<\/text>/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(svg))) {
+    if (!/\bridge\b/.test(match[1])) continue;
+    const path = match[2].match(/<textPath\b[^>]*>([\s\S]*?)<\/textPath>/);
+    const raw = decodeXml(path ? path[1] : match[2]).replace(/\s+/g, " ").trim();
+    if (raw) texts.push(raw);
+  }
+  return texts;
+}
+
+function letterCase(style: PrintStyle, period: number): Check {
+  const face = loadRidgeFace(fontById(style.font).file);
+  const report = ridgeCaseReport(face, fontSizeFor(period, style.textScale || 1));
+  return {
+    id: "letter-case",
+    label: "Distinct lowercase",
+    passed: report.ok,
+    detail: report.detail,
+  };
 }
 
 function decodeXml(value: string) {

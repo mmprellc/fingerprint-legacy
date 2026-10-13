@@ -1,24 +1,11 @@
-import path from "node:path";
-import opentype from "opentype.js";
 import { PDFDocument } from "pdf-lib";
 import sharp from "sharp";
 import { nameSpread } from "./audit";
-import { edgeTypeScale, fontSizeFor, placeGlyphs, planPortrait, poseAt, rimWeights, roleScale } from "./lettering";
+import { loadRidgeFace, layoutRun, type GlyphFont } from "./glyphs";
+import { fontSizeFor, planPortrait, rimWeights, roleScale } from "./lettering";
 import { fontById, mapPrint, presetById } from "./preview";
 import type { PreviewPrint } from "./preview";
-import type { PrintStyle, Pt } from "./types";
-
-type GlyphFont = opentype.Font;
-
-const fonts = new Map<string, GlyphFont>();
-
-function loadFace(file: string) {
-  const cached = fonts.get(file);
-  if (cached) return cached;
-  const face = opentype.loadSync(path.join(process.cwd(), "fonts", file));
-  fonts.set(file, face);
-  return face;
-}
+import type { PrintStyle } from "./types";
 
 function hexToRgb(hex: string) {
   const value = hex.replace("#", "");
@@ -52,37 +39,6 @@ function mixHex(from: string, to: string, t: number) {
   return `#${hex(mix(a.r, b.r))}${hex(mix(a.g, b.g))}${hex(mix(a.b, b.b))}`;
 }
 
-function layoutRun(font: GlyphFont, text: string, points: Pt[], fontSize: number, trackingEm = 0.05) {
-  const tracking = -fontSize * trackingEm;
-  const glyphs = placeGlyphs(
-    text,
-    pathLengthOf(points),
-    (ch) => advanceOf(font, ch, fontSize),
-    fontSize * 0.16,
-    tracking,
-  );
-  const placed: { d: string; x: number; y: number; angle: number }[] = [];
-  for (const item of glyphs) {
-    const glyph = font.charToGlyph(item.text);
-    const pose = poseAt(points, item.distance);
-    const box = glyph.getBoundingBox();
-    const scale = fontSize / font.unitsPerEm;
-    const cx = ((glyph.advanceWidth ?? font.unitsPerEm * 0.5) * scale) / 2;
-    const cy = -((box.y1 + box.y2) / 2) * scale;
-    const d = glyph.getPath(-cx, -cy, fontSize).toPathData(1);
-    if (d) placed.push({ d, x: pose.x, y: pose.y, angle: (pose.angle * 180) / Math.PI });
-  }
-  return placed;
-}
-
-function pathLengthOf(points: Pt[]) {
-  let length = 0;
-  for (let i = 1; i < points.length; i++) {
-    length += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
-  }
-  return length;
-}
-
 export type RenderRequest = {
   prints: PreviewPrint[];
   style: PrintStyle;
@@ -96,9 +52,9 @@ export type RenderRequest = {
 
 export async function renderArtwork(request: RenderRequest) {
   const preset = presetById(request.style.preset);
-  const face = loadFace(fontById(request.style.font).file);
-  const scriptFace = loadFace("GreatVibes-Regular.ttf");
-  const titleFace = loadFace("CormorantGaramond-Medium.ttf");
+  const face = loadRidgeFace(fontById(request.style.font).file);
+  const scriptFace = loadRidgeFace("GreatVibes-Regular.ttf");
+  const titleFace = loadRidgeFace("CormorantGaramond-Medium.ttf");
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -167,10 +123,10 @@ export async function renderArtwork(request: RenderRequest) {
   const ink = preset.ink;
   const groups: string[] = [];
   const defs: string[] = [];
+  const ridgeSizes = new Set<string>();
   request.prints.forEach((print) => {
     const ridges = mapPrint(print);
     const rims = rimWeights(ridges);
-    const bodyScale = rims.map((rim) => edgeTypeScale(rim));
     const sourceSize = fontSizeFor(request.period, request.style.textScale || 1);
     const planned = planPortrait(
       ridges,
@@ -183,7 +139,6 @@ export async function renderArtwork(request: RenderRequest) {
         return measureToken(face, word, size, -size * tracking, size * 0.16);
       },
       sourceSize * roleScale("body") * 0.16,
-      bodyScale,
     );
     const bodyLines = planned.flatMap((runs) => runs.filter((run) => run.role === "body" && run.text).map((run) => run.text));
     const listed = request.style.names ?? [];
@@ -194,11 +149,11 @@ export async function renderArtwork(request: RenderRequest) {
     const body: string[] = [];
     planned.forEach((runs, ridgeIndex) => {
       const rim = rims[ridgeIndex] ?? 0;
-      const scale = bodyScale[ridgeIndex] ?? 1;
       const bodyInk = mixHex(ink, "#121416", Math.min(1, 0.18 + rim * 0.72));
       for (const run of runs) {
         if (!run.text) continue;
-        const size = fontSize * roleScale(run.role) * (run.role === "body" ? scale : 1);
+        const size = fontSize * roleScale(run.role);
+        ridgeSizes.add(size.toFixed(2));
         const ridgeInk = run.role === "body" ? bodyInk : mixHex(ink, "#121416", 0.86);
         const placed = run.points.map((point) => ({
           x: ox + (point.x - minX) * fit,
@@ -214,6 +169,7 @@ export async function renderArtwork(request: RenderRequest) {
     });
     groups.push(`<g>${body.join("")}</g>`);
   });
+  if (ridgeSizes.size > 1) throw new Error("Ridge text must be one size.");
 
   const caption = request.matchSource ? "" : frameCaption(request.style, titleFace, scriptFace, paperW, paperH, topPx, bottomPx, ink);
   const frame = request.frame

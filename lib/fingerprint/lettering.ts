@@ -479,21 +479,19 @@ export function dedicationWords(style: PrintStyle, role: "core" | "secondary") {
   return pair.map((line) => (line ?? "").replace(/\s+/g, " ").trim()).filter(Boolean);
 }
 
-export function roleScale(role: RidgeRole) {
-  // Both dedications sit a step larger than the body, still inside 70% of the period.
-  // 0.64 × 1.09 stays under that cap.
-  if (role === "core" || role === "secondary") return 1.09;
+export function roleScale(_role: RidgeRole) {
+  // Every ridge uses one size. Dedications are the same size as the names;
+  // the renderer darkens their ink instead of enlarging them.
   return 1;
 }
 
 /**
- * Body type grows toward the outer rim so the silhouette reads darker from
- * across the room. 0.64 × 1.09 stays inside 70% of the ridge period.
- * Density comes from the letters themselves, never from a stroke under them.
+ * Ridge text does not grow or shrink toward the rim. A short ridge that cannot
+ * hold the next word at this size gets a divider, not a smaller font.
+ * The rim still darkens by ink, not by type size.
  */
-export function edgeTypeScale(rim: number) {
-  const t = Math.max(0, Math.min(1, rim));
-  return 1 + t * 0.09;
+export function edgeTypeScale(_rim: number) {
+  return 1;
 }
 
 /** 0 in the interior, 1 on the outer rim, so the oval reads from across the room. */
@@ -568,7 +566,6 @@ export function planPortrait(
   period: number,
   measure: (word: string, role: RidgeRole) => number,
   gap: number,
-  bodyScale?: number[],
 ): PlannedRun[][] {
   const pairs: { role: "core" | "secondary"; phrase: string }[] = [];
   const corePhrase = [cleanLine(style.centerName), cleanLine(style.centerDetail)].filter(Boolean).join(" ");
@@ -643,16 +640,12 @@ export function planPortrait(
 
   const source = bodySources(style.names, style.scriptures, lines);
   const ceiling = slots.reduce((max, slot) => Math.max(max, pathLength(slot.points)), 0);
-  const scaleOf = (runIndex: number) => {
-    const scale = bodyScale?.[slots[runIndex]?.ridge ?? 0] ?? 1;
-    return scale > 0 ? scale : 1;
-  };
   const packed = packBodyRuns(
     slots.map((slot) => slot.points),
     source.names,
     source.verses,
-    (word, runIndex) => measure(word, "body") * scaleOf(runIndex),
-    (runIndex) => gap * scaleOf(runIndex),
+    (word) => measure(word, "body"),
+    gap,
     { i: 0 },
     { i: 0 },
     ceiling,

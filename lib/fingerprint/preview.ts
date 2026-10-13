@@ -1,5 +1,5 @@
 import { escapeXml, toPathD } from "./geometry";
-import { edgeTypeScale, estimateWordWidth, fontSizeFor, planPortrait, rimWeights, roleScale } from "./lettering";
+import { estimateWordWidth, fontSizeFor, planPortrait, rimWeights, roleScale } from "./lettering";
 import { FONTS, INK_PRESETS, type PrintStyle, type Ridge } from "./types";
 
 export { fontSizeFor };
@@ -117,7 +117,6 @@ export function buildPreviewSvg(
   for (let printIndex = 0; printIndex < mapped.length; printIndex++) {
     const ridges = mapped[printIndex];
     const rims = rimWeights(ridges);
-    const bodyScale = rims.map((rim) => edgeTypeScale(rim));
     const bodySize = fontSize * roleScale("body");
     const planned = planPortrait(
       ridges,
@@ -129,15 +128,13 @@ export function buildPreviewSvg(
         return estimateWordWidth(word, size, Math.max(font.charRatio, 0.62), -size * (role === "body" ? 0.04 : 0.045));
       },
       bodySize * 0.16,
-      bodyScale,
     );
     planned.forEach((runs, ridgeIndex) => {
       const rim = rims[ridgeIndex] ?? 0;
-      const scale = bodyScale[ridgeIndex] ?? 1;
       const fill = rim > 0.35 ? "#1A1C1E" : preset.ink;
       for (const run of runs) {
         if (!run.text) continue;
-        const size = fontSize * roleScale(run.role) * (run.role === "body" ? scale : 1);
+        const size = fontSize * roleScale(run.role);
         const ink = run.role === "body" ? fill : "#1A1C1E";
         const id = `r${index++}`;
         defs.push(`<path id="${id}" d="${toPathD(run.points)}"/>`);

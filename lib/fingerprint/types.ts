@@ -89,7 +89,7 @@ export type PrintStyle = {
   /** Primary dedication, set along the innermost core ridges. */
   centerName?: string;
   centerDetail?: string;
-  /** Second dedication, on the next ridges out, set a little heavier than the names. */
+  /** Second dedication, on the next ridges out, same size as the names and a little darker. */
   secondaryName?: string;
   secondaryDetail?: string;
   /** Names repeated along the ridges, one phrase each. Spelled as given. */

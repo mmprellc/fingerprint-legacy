@@ -1,5 +1,5 @@
 import { pathLength, slicePath } from "./geometry";
-import { edgeTypeScale, estimateWordWidth, fontSizeFor, planPortrait, rimWeights, roleScale } from "./lettering";
+import { estimateWordWidth, fontSizeFor, planPortrait, roleScale } from "./lettering";
 import { fontById } from "./preview";
 import type { Check } from "./audit";
 import type { ExtractResult, PrintStyle, Pt } from "./types";
@@ -78,8 +78,6 @@ function textSpans(result: ExtractResult, style: PrintStyle) {
   const font = fontById(style.font);
   const ratio = Math.max(font.charRatio, 0.62);
   const fontSize = fontSizeFor(period, style.textScale || 1);
-  const rims = rimWeights(ridges);
-  const bodyScale = rims.map((rim) => edgeTypeScale(rim));
   const planned = planPortrait(
     ridges,
     style,
@@ -91,16 +89,14 @@ function textSpans(result: ExtractResult, style: PrintStyle) {
       return wordWidth(word, size, ratio, -size * tracking);
     },
     fontSize * roleScale("body") * 0.16,
-    bodyScale,
   );
   const spans: Pt[][] = [];
-  planned.forEach((runs, ridgeIndex) => {
-    const scale = bodyScale[ridgeIndex] ?? 1;
+  planned.forEach((runs) => {
     for (const run of runs) {
       if (!run.text) continue;
-      const roleSize = fontSize * roleScale(run.role) * (run.role === "body" ? scale : 1);
+      const roleSize = fontSize * roleScale(run.role);
       const tracking = run.role === "body" ? 0.04 : 0.045;
-      const gap = fontSize * roleScale("body") * 0.16 * (run.role === "body" ? scale : 1);
+      const gap = fontSize * roleScale("body") * 0.16;
       const span = inkSpan(run.points, run.text, (word) => wordWidth(word, roleSize, ratio, -roleSize * tracking), gap);
       if (span.length > 1) spans.push(span);
     }

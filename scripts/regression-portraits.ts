@@ -128,6 +128,26 @@ async function main() {
   if (stroke.find((check) => check.id === "no-strokes")?.passed) {
     throw new Error("The stroke check did not catch a drawn line");
   }
+  if (!stroke.find((check) => check.id === "letter-case")?.passed) {
+    throw new Error(stroke.find((check) => check.id === "letter-case")?.detail || "The letter-case check failed");
+  }
+  const mixed = auditLayout(
+    `<svg><text class="ridge ridge-body" font-size="12.00"><textPath>you</textPath></text><text class="ridge ridge-body" font-size="9.00"><textPath>I</textPath></text></svg>`,
+    shortStyle,
+    12,
+  );
+  if (mixed.find((check) => check.id === "uniform-size")?.passed) {
+    throw new Error("The size check did not catch two ridge sizes");
+  }
+  const shouted = auditLayout(
+    `<svg><text class="ridge ridge-body" font-size="12"><textPath>YOU</textPath></text></svg>`,
+    shortStyle,
+    12,
+  );
+  const caseCheck = shouted.find((check) => check.id === "source-case");
+  if (caseCheck?.passed || !caseCheck?.detail.includes("you")) {
+    throw new Error(caseCheck?.detail || "The case check did not catch YOU");
+  }
 
   const randy = fs.readFileSync(sourcePath);
   const whorl = synthesizePrint("whorl");
