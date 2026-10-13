@@ -2,7 +2,7 @@ import { PDFDocument } from "pdf-lib";
 import sharp from "sharp";
 import { nameSpread } from "./audit";
 import { loadRidgeFace, layoutRun, type GlyphFont } from "./glyphs";
-import { fontSizeFor, planPortrait, rimWeights, roleScale } from "./lettering";
+import { estimateWordWidth, fontSizeFor, planPortrait, rimWeights, roleScale } from "./lettering";
 import { fontById, mapPrint, presetById } from "./preview";
 import type { PreviewPrint } from "./preview";
 import type { PrintStyle } from "./types";
@@ -127,7 +127,8 @@ export async function renderArtwork(request: RenderRequest) {
   request.prints.forEach((print) => {
     const ridges = mapPrint(print);
     const rims = rimWeights(ridges);
-    const sourceSize = fontSizeFor(request.period, request.style.textScale || 1, fontById(request.style.font).capEm);
+    const faceId = fontById(request.style.font);
+    const sourceSize = fontSizeFor(request.period, request.style.textScale || 1, faceId.capEm);
     const planned = planPortrait(
       ridges,
       request.style,
@@ -136,7 +137,7 @@ export async function renderArtwork(request: RenderRequest) {
       (word, role) => {
         const size = sourceSize * roleScale(role);
         const tracking = role === "body" ? 0.04 : 0.045;
-        return measureToken(face, word, size, -size * tracking, size * 0.16);
+        return estimateWordWidth(word, size, faceId.charRatio, -size * tracking);
       },
       sourceSize * roleScale("body") * 0.16,
     );

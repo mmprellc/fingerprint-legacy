@@ -1,7 +1,7 @@
 import { loadRidgeFace, ridgeCaseReport } from "./glyphs";
-import { CAP_RATIO, edgeTypeScale, fontSizeFor, RIDGE_DIVIDER, roleScale, type RidgeRole } from "./lettering";
+import { CAP_RATIO, edgeTypeScale, fontSizeFor, MIN_BODY_WORDS, ridgePitch, RIDGE_DIVIDER, roleScale, type RidgeRole } from "./lettering";
 import { fontById } from "./preview";
-import type { PrintStyle } from "./types";
+import type { PrintStyle, Pt } from "./types";
 
 export type Check = {
   id: string;
@@ -107,6 +107,9 @@ export function auditLayout(svg: string, style: PrintStyle, period: number): Che
   checks.push(sourceCase(svg, style));
   checks.push(letterCase(style, period));
   checks.push(noFillers(svg));
+  const body = bodyRuns(svg);
+  checks.push(minSegment(body.map((run) => run.text), scriptures));
+  if (scriptures.length) checks.push(verseContinuity(body, scriptures, names, period));
   return checks;
 }
 
@@ -257,17 +260,142 @@ function decodeXml(value: string) {
   return value.replace(/&quot;/g, '"').replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
 }
 
-function bodyRunTexts(svg: string) {
-  const texts: string[] = [];
+type BodyRun = { text: string; start: Pt | null; end: Pt | null };
+
+function pathEnds(d: string): { start: Pt; end: Pt } | null {
+  const nums = d.match(/-?\d*\.?\d+(?:e[-+]?\d+)?/gi);
+  if (!nums || nums.length < 4) return null;
+  const values = nums.map(Number);
+  return {
+    start: { x: values[0], y: values[1] },
+    end: { x: values[values.length - 2], y: values[values.length - 1] },
+  };
+}
+
+function bodyRuns(svg: string): BodyRun[] {
+  const paths = new Map<string, string>();
+  const pathRe = /<path\b([^>]*)\/?>/g;
+  let pathMatch: RegExpExecArray | null;
+  while ((pathMatch = pathRe.exec(svg))) {
+    const id = pathMatch[1].match(/\bid="([^"]+)"/);
+    const d = pathMatch[1].match(/\bd="([^"]+)"/);
+    if (id && d) paths.set(id[1], d[1]);
+  }
+  const runs: BodyRun[] = [];
   const re = /<text\b([^>]*)>([\s\S]*?)<\/text>/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(svg))) {
     if (!/\bridge-body\b/.test(match[1])) continue;
-    const path = match[2].match(/<textPath\b[^>]*>([\s\S]*?)<\/textPath>/);
-    const raw = decodeXml(path ? path[1] : match[2]).replace(/\s+/g, " ").trim();
-    if (raw) texts.push(raw);
+    const path = match[2].match(/<textPath\b([^>]*)>([\s\S]*?)<\/textPath>/);
+    const raw = decodeXml(path ? path[2] : match[2]).replace(/\s+/g, " ").trim();
+    if (!raw) continue;
+    const href = path?.[1].match(/\bhref="#([^"]+)"/);
+    const ends = href ? pathEnds(paths.get(href[1]) ?? "") : null;
+    runs.push({ text: raw, start: ends?.start ?? null, end: ends?.end ?? null });
   }
-  return texts;
+  return runs;
+}
+
+function bodyRunTexts(svg: string) {
+  return bodyRuns(svg).map((run) => run.text);
+}
+
+/** A body line must carry a real run of words. A complete short verse may stand alone. */
+function minSegment(runs: string[], scriptures: string[]): Check {
+  const wholes = new Set(scriptures.map((verse) => verse.replace(/\s+/g, " ").trim()));
+  const short = runs.filter((text) => {
+    const words = wordsOfText(text);
+    if (!words.length || words.length >= MIN_BODY_WORDS) return false;
+    return !wholes.has(text);
+  });
+  if (short.length) {
+    const sample = short[0].length > 48 ? `${short[0].slice(0, 48)}…` : short[0];
+    return {
+      id: "min-segment",
+      label: "Minimum line length",
+      passed: false,
+      detail: `“${sample}” is shorter than ${MIN_BODY_WORDS} words.`,
+    };
+  }
+  return {
+    id: "min-segment",
+    label: "Minimum line length",
+    passed: true,
+    detail: `Every body line is at least ${MIN_BODY_WORDS} words, or one complete short verse.`,
+  };
+}
+
+function endGap(a: BodyRun, b: BodyRun) {
+  if (!a.start || !a.end || !b.start || !b.end) return 0;
+  return Math.min(
+    Math.hypot(a.end.x - b.start.x, a.end.y - b.start.y),
+    Math.hypot(a.end.x - b.end.x, a.end.y - b.end.y),
+    Math.hypot(a.start.x - b.start.x, a.start.y - b.start.y),
+    Math.hypot(a.start.x - b.end.x, a.start.y - b.end.y),
+  );
+}
+
+/**
+ * Each verse stays whole, and the ridges that carry it are neighbors.
+ * A phrase that jumps across the oval fails even if the words are in order.
+ */
+function verseContinuity(runs: BodyRun[], scriptures: string[], names: string[], period: number): Check {
+  const order = versesInOrder(
+    runs.map((run) => run.text),
+    scriptures,
+    names,
+  );
+  if (!order.ok) return { id: "verse-continuity", label: "Verse continuity", passed: false, detail: order.detail };
+
+  const verses = scriptures.map((verse) => verse.split(/\s+/).filter(Boolean));
+  const words: { word: string; run: number }[] = [];
+  runs.forEach((run, runIndex) => {
+    for (const word of wordsOfText(run.text)) words.push({ word, run: runIndex });
+  });
+  const matchesAt = (index: number, seq: string[]) => {
+    if (index + seq.length > words.length) return false;
+    return seq.every((word, offset) => words[index + offset].word === word);
+  };
+  const nameSeqs = names
+    .map((name) => name.split(/\s+/).filter(Boolean))
+    .filter((seq) => seq.length)
+    .sort((a, b) => b.length - a.length);
+  const limit = Math.max(ridgePitch(period) * 3.3, 36);
+  let index = 0;
+  let verseAt = 0;
+  while (index < words.length && verseAt < verses.length * 8) {
+    const expected = verses[verseAt % verses.length];
+    if (matchesAt(index, expected)) {
+      const first = words[index].run;
+      const last = words[index + expected.length - 1].run;
+      for (let runIndex = first; runIndex < last; runIndex++) {
+        const gap = endGap(runs[runIndex], runs[runIndex + 1]);
+        if (gap > limit) {
+          return {
+            id: "verse-continuity",
+            label: "Verse continuity",
+            passed: false,
+            detail: `A verse jumps ${Math.round(gap)}px between ridges instead of continuing on the next line.`,
+          };
+        }
+      }
+      verseAt += 1;
+      index += expected.length;
+      continue;
+    }
+    const name = nameSeqs.find((seq) => matchesAt(index, seq));
+    if (name) {
+      index += name.length;
+      continue;
+    }
+    break;
+  }
+  return {
+    id: "verse-continuity",
+    label: "Verse continuity",
+    passed: true,
+    detail: "Each verse continues along neighboring ridges.",
+  };
 }
 
 function wordsOfText(text: string) {

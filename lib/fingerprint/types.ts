@@ -118,6 +118,6 @@ export const FONTS: { id: RidgeFontId; label: string; file: string; family: stri
   },
 ];
 
-/** The portrait defaults to the open black-on-white piece: a thin serif, one small size. */
+/** The portrait defaults to the black-on-white piece: a thin serif, one small size, dense even rows. */
 export const DEFAULT_FONT: RidgeFontId = "cormorant";
 export const DEFAULT_PRESET = "ink";

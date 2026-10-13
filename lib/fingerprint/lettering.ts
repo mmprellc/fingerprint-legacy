@@ -13,17 +13,46 @@ export const UNDERSTROKE = 0;
 /** Cormorant Garamond Regular cap height, the default ridge face, as a fraction of the em. */
 const CAP_EM = 0.625;
 
-/** Cap height as a fraction of the print's own ridge spacing. The lines are drawn farther apart than this. */
+/**
+ * Cap top through the descender for that face, as a fraction of the em.
+ * H sits at 0.625 and y reaches −0.281.
+ */
+const LINE_EM = 0.906;
+
+/** Cap height as a fraction of the print's own ridge spacing. */
 export const CAP_RATIO = 0.5;
+
+/** Centerline pitch of the reconstructed field, in line-heights of the ridge type. */
+export const PITCH_LINES = 1.4;
+
+/** A body line shorter than this is a fragment and is left off the print. */
+export const MIN_BODY_WORDS = 8;
 
 export function ridgeWidth(period: number) {
   return Math.max(2.4, period * RIDGE_WIDTH_RATIO);
 }
 
 export function fontSizeFor(period: number, textScale = 1, capEm = CAP_EM) {
-  // One small size. The open gap between lines, not a larger cap, keeps the neighbors apart.
   const cap = Math.max(6.5, period * CAP_RATIO);
   return (cap / (capEm || CAP_EM)) * (textScale || 1);
+}
+
+/** Height of one line of ridge type, from cap top through the descender. */
+export function lineHeightFor(period: number, textScale = 1, capEm = CAP_EM) {
+  return fontSizeFor(period, textScale, capEm) * LINE_EM;
+}
+
+/** Even centerline spacing: 1.4 times the type's line height. */
+export function ridgePitch(period: number, textScale = 1, capEm = CAP_EM) {
+  return lineHeightFor(period, textScale, capEm) * PITCH_LINES;
+}
+
+/**
+ * Seed spacing in units of the print period. Traces settle a little closer than
+ * the seed, so the seed is opened until the field lands on the pitch.
+ */
+export function pitchSep(period = 12) {
+  return (ridgePitch(period) / Math.max(period, 1)) * 1.12;
 }
 
 export function wordsOf(lines: string[]) {
@@ -40,10 +69,10 @@ function verseWords(verse: string) {
 
 /**
  * Names stay whole. Each scripture is one phrase, from the opening quote through
- * the reference, and may continue on the next ridge segments in this same order.
- * A name never lands in the middle of a verse, and a verse never starts mid-phrase.
- * Names sit between whole verses, or on their own ridges. A ridge too short for a
- * whole name or the next words of a verse stays blank. Nothing is filled with dots.
+ * the reference, and continues on the next paths in this same order. Those paths
+ * are already the neighboring ridges. A name never lands in the middle of a verse.
+ * A body line shorter than eight words is left blank, unless it is one complete
+ * short verse. Nothing is filled with dots.
  */
 export function packBodyRuns(
   runs: Pt[][],
@@ -75,29 +104,58 @@ export function packBodyRuns(
   const namesRemainFrom = (from: number) =>
     names.some((name, index) => slotCount[index] === 0 && !cannotFitFrom(name, from));
 
-  const verseFits = (start: number, words: string[], used0: number, count0: number) => {
-    let wi = 0;
-    for (let runIndex = start; runIndex < runs.length && wi < words.length; runIndex++) {
-      const length = pathLength(runs[runIndex]);
-      const gap = gapFor(runIndex);
-      let used = runIndex === start ? used0 : 2;
-      let count = runIndex === start ? count0 : 0;
-      if (runIndex === start && count > 0) {
-        // The verse follows whatever is already on the run, with a word space.
-      }
-      let placed = 0;
-      while (wi < words.length) {
-        const need = (count ? gap : 0) + measure(words[wi], runIndex);
-        if (need > length - used - 1.5) break;
-        used += need;
-        count += 1;
-        wi += 1;
-        placed += 1;
-      }
-      // A later segment that cannot hold the next word is left blank. The phrase continues.
-      if (!placed && runIndex === start) return false;
+  const takeCount = (runIndex: number, words: string[], from: number) => {
+    const length = pathLength(runs[runIndex]);
+    const gap = gapFor(runIndex);
+    let used = 2;
+    let count = 0;
+    let wi = from;
+    while (wi < words.length) {
+      const need = (count ? gap : 0) + measure(words[wi], runIndex);
+      if (need > length - used - 1.5) break;
+      used += need;
+      count += 1;
+      wi += 1;
     }
-    return wi === words.length;
+    return count;
+  };
+
+  // How many words this run may take so every piece of the verse, including the tail, stays at least MIN_BODY_WORDS.
+  const legalTake = (runIndex: number, words: string[], from: number) => {
+    const remain = words.length - from;
+    if (remain <= 0) return 0;
+    const fit = takeCount(runIndex, words, from);
+    if (words.length < MIN_BODY_WORDS) return fit >= remain ? remain : 0;
+    if (fit >= remain) return remain >= MIN_BODY_WORDS ? remain : 0;
+    let take = fit;
+    if (remain - take < MIN_BODY_WORDS) take = remain - MIN_BODY_WORDS;
+    if (take < MIN_BODY_WORDS || take > fit) return 0;
+    return take;
+  };
+
+  // The whole verse laid on consecutive runs, each piece at least MIN_BODY_WORDS words.
+  const versePlan = (start: number, words: string[]) => {
+    if (start >= runs.length) return null;
+    if (words.length < MIN_BODY_WORDS) return legalTake(start, words, 0) === words.length ? [words.length] : null;
+    const counts: number[] = [];
+    let wi = 0;
+    let runIndex = start;
+    while (wi < words.length) {
+      if (runIndex >= runs.length) return null;
+      const take = legalTake(runIndex, words, wi);
+      if (!take) return null;
+      counts.push(take);
+      wi += take;
+      runIndex += 1;
+    }
+    return counts;
+  };
+
+  const wholeVerse = new Set(versesAt.map((words) => words.join(" ")));
+  const acceptable = (text: string) => {
+    const count = text.split(/\s+/).filter(Boolean).length;
+    if (count >= MIN_BODY_WORDS) return true;
+    return count > 0 && wholeVerse.has(text);
   };
 
   // One full cycle has to land. Extra cycles fill the remaining ridges, with names between verses.
@@ -117,32 +175,15 @@ export function packBodyRuns(
   const nameBudget = Math.max(0, totalLen - targetCycles * cycleLen);
   const namesPerGap = names.length ? Math.max(1, Math.round(nameBudget / gapCount / Math.max(nameUnit, 1))) : 0;
 
-  // True when `count` whole verses still fit on runs from `from` onward, with no names between them.
+  // True when `count` whole verses still fit on consecutive runs from `from` onward.
   const laterHolds = (from: number, count: number) => {
     if (count <= 0) return true;
     let runIndex = from;
     for (let n = 0; n < count; n++) {
       const words = versesAt[(verseAt + n) % versesAt.length];
-      let wi = 0;
-      while (wi < words.length) {
-        if (runIndex >= runs.length) return false;
-        const length = pathLength(runs[runIndex]);
-        const gap = gapFor(runIndex);
-        let used = 2;
-        let countOnRun = 0;
-        while (wi < words.length) {
-          const need = (countOnRun ? gap : 0) + measure(words[wi], runIndex);
-          if (need > length - used - 1.5) break;
-          used += need;
-          countOnRun += 1;
-          wi += 1;
-        }
-        if (!countOnRun) {
-          runIndex += 1;
-          continue;
-        }
-        runIndex += 1;
-      }
+      const plan = versePlan(runIndex, words);
+      if (!plan) return false;
+      runIndex += plan.length;
     }
     return true;
   };
@@ -171,95 +212,120 @@ export function packBodyRuns(
       }
       return true;
     };
+    const snap = () => ({
+      verseAt,
+      verseWord,
+      owed,
+      namesSinceVerse,
+      cursor: nameCursor.i,
+      slots: slotCount.slice(),
+    });
+    const restore = (saved: ReturnType<typeof snap>) => {
+      verseAt = saved.verseAt;
+      verseWord = saved.verseWord;
+      owed = saved.owed;
+      namesSinceVerse = saved.namesSinceVerse;
+      nameCursor.i = saved.cursor;
+      saved.slots.forEach((count, index) => {
+        slotCount[index] = count;
+      });
+      parts.splice(0, parts.length);
+      used = 2;
+    };
 
-    const startVerse = (words: string[]) => {
-      let placed = 0;
-      while (verseWord < words.length && place(words[verseWord])) {
+    const placeVerseWords = (words: string[], count: number) => {
+      for (let i = 0; i < count; i++) {
+        if (!place(words[verseWord])) return false;
         verseWord += 1;
-        placed += 1;
       }
-      if (!placed) return "stop" as const;
       if (verseWord >= words.length) {
         verseWord = 0;
         verseAt += 1;
         owed = Math.max(0, owed - 1);
         namesSinceVerse = 0;
-        return "more" as const;
       }
-      return "stop" as const;
+      return true;
     };
 
-    let guard = 0;
-    while (guard++ < 200) {
-      if (versesAt.length && verseWord > 0) {
-        const words = versesAt[verseAt % versesAt.length];
-        while (verseWord < words.length && place(words[verseWord])) verseWord += 1;
-        if (verseWord >= words.length) {
-          verseWord = 0;
-          verseAt += 1;
-          owed = Math.max(0, owed - 1);
-          namesSinceVerse = 0;
+    const fillNames = () => {
+      if (!names.length) return;
+      let guard = 0;
+      const room = Math.ceil(length / 8) + names.length + 4;
+      while (guard++ < room) {
+        const floor = Math.min(...slotCount);
+        const next = nameCursor.i % names.length;
+        if (slotCount[next] > floor) {
+          nameCursor.i += 1;
           continue;
         }
-        // The next word does not fit here. The phrase continues on the next segment, with no name in between.
-        break;
-      }
-
-      const words = versesAt.length ? versesAt[verseAt % versesAt.length] : null;
-      const fitsHere = words ? verseFits(runIndex, words, used, parts.length) : false;
-      const mustStart = Boolean(words && owed > 0 && fitsHere && !laterHolds(runIndex + 1, owed));
-      const namesRemain = namesRemainFrom(runIndex);
-      const wantVerse = Boolean(
-        words && fitsHere && (mustStart || names.length === 0 || (namesSinceVerse >= namesPerGap && !namesRemain)),
-      );
-
-      if (wantVerse && words) {
-        if (startVerse(words) === "more") continue;
-        break;
-      }
-
-      if (!names.length) break;
-      const floor = Math.min(...slotCount);
-      const next = nameCursor.i % names.length;
-      // This listing was already placed out of order on a shorter ridge. Keep the round-robin moving.
-      if (slotCount[next] > floor) {
-        nameCursor.i += 1;
-        continue;
-      }
-      if (cannotFitFrom(names[next], runIndex)) {
-        nameCursor.i += 1;
-        if (nameCursor.i > names.length * (runs.length + 2)) break;
-        continue;
-      }
-
-      const take = (idx: number) => {
-        if (!tokensFit([names[idx]])) return false;
-        place(names[idx]);
-        slotCount[idx] += 1;
-        namesSinceVerse += 1;
-        if (idx === nameCursor.i % names.length) nameCursor.i += 1;
-        return true;
-      };
-
-      if (take(next)) continue;
-      // A short ridge may take another name that is tied for fewest placements, so the short
-      // ones rotate. A name that is already ahead waits, instead of becoming the filler.
-      let filled = false;
-      for (let dist = 1; dist < names.length; dist++) {
-        const idx = (next + dist) % names.length;
-        if (slotCount[idx] !== floor) continue;
-        if (take(idx)) {
-          filled = true;
-          break;
+        if (cannotFitFrom(names[next], runIndex)) {
+          nameCursor.i += 1;
+          if (nameCursor.i > names.length * (runs.length + 2)) break;
+          continue;
         }
+        const take = (idx: number) => {
+          if (!tokensFit([names[idx]])) return false;
+          place(names[idx]);
+          slotCount[idx] += 1;
+          namesSinceVerse += 1;
+          if (idx === nameCursor.i % names.length) nameCursor.i += 1;
+          return true;
+        };
+        if (take(next)) continue;
+        let filled = false;
+        for (let dist = 1; dist < names.length; dist++) {
+          const idx = (next + dist) % names.length;
+          if (slotCount[idx] !== floor) continue;
+          if (take(idx)) {
+            filled = true;
+            break;
+          }
+        }
+        if (!filled) break;
       }
-      if (filled) continue;
-      if (words && fitsHere && (!namesRemain || mustStart)) {
-        if (startVerse(words) === "more") continue;
+    };
+
+    const saved = snap();
+    const words = versesAt.length ? versesAt[verseAt % versesAt.length] : null;
+
+    if (words && verseWord > 0) {
+      const take = legalTake(runIndex, words, verseWord);
+      if (!take || !placeVerseWords(words, take)) {
+        restore(saved);
+        packed.push({ points, text: "" });
+        continue;
       }
-      break;
+      if (verseWord === 0) {
+        const mid = snap();
+        fillNames();
+        if (!acceptable(parts.join(" "))) restore(mid);
+      }
+    } else if (words) {
+      const plan = versePlan(runIndex, words);
+      const namesRemain = namesRemainFrom(runIndex);
+      const mustStart = Boolean(plan && owed > 0 && !laterHolds(runIndex + 1, owed));
+      const wantVerse = Boolean(plan && (mustStart || names.length === 0 || (namesSinceVerse >= namesPerGap && !namesRemain)));
+      if (wantVerse && plan) {
+        placeVerseWords(words, plan[0]);
+        if (verseWord === 0) {
+          const mid = snap();
+          fillNames();
+          if (!acceptable(parts.join(" "))) restore(mid);
+        }
+      } else {
+        fillNames();
+      }
+    } else {
+      fillNames();
     }
-    packed.push({ points, text: parts.join(" ") });
+
+    const text = parts.join(" ");
+    if (!acceptable(text)) {
+      restore(saved);
+      packed.push({ points, text: "" });
+      continue;
+    }
+    packed.push({ points, text });
   }
   verseCursor.i = verseAt;
   return packed;
@@ -524,7 +590,101 @@ export function rimWeights(ridges: { points: Pt[] }[]): number[] {
   });
 }
 
-export type PlannedRun = { points: Pt[]; text: string; role: RidgeRole };
+export type PlannedRun = { points: Pt[]; text: string; role: RidgeRole; order: number };
+
+type LoosePath = { points: Pt[]; ridge: number };
+
+function outwardHeading(points: Pt[], end: 0 | 1) {
+  if (end === 0) {
+    const a = points[0];
+    const b = points[Math.min(points.length - 1, 4)];
+    const len = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+    return { x: (a.x - b.x) / len, y: (a.y - b.y) / len };
+  }
+  const a = points[points.length - 1];
+  const b = points[Math.max(0, points.length - 5)];
+  const len = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+  return { x: (a.x - b.x) / len, y: (a.y - b.y) / len };
+}
+
+/** Join collinear pieces that face each other across a short gap, so a broken arc becomes one path. */
+function weldPaths(items: LoosePath[], maxGap: number): LoosePath[] {
+  const paths = items.filter((item) => item.points.length > 1).map((item) => ({ points: item.points.slice(), ridge: item.ridge }));
+  const tip = (points: Pt[], end: 0 | 1) => (end === 0 ? points[0] : points[points.length - 1]);
+  let guard = 0;
+  while (guard++ < paths.length + 4) {
+    let bestI = -1;
+    let bestJ = -1;
+    let bestEndI: 0 | 1 = 0;
+    let bestEndJ: 0 | 1 = 0;
+    let bestD = maxGap;
+    for (let i = 0; i < paths.length; i++) {
+      for (const endI of [0, 1] as const) {
+        const a = tip(paths[i].points, endI);
+        const dir = outwardHeading(paths[i].points, endI);
+        for (let j = i + 1; j < paths.length; j++) {
+          for (const endJ of [0, 1] as const) {
+            const b = tip(paths[j].points, endJ);
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist < 1.5 || dist >= bestD) continue;
+            const ux = dx / dist;
+            const uy = dy / dist;
+            if (dir.x * ux + dir.y * uy < 0.48) continue;
+            const dirJ = outwardHeading(paths[j].points, endJ);
+            if (dirJ.x * ux + dirJ.y * uy > -0.15) continue;
+            bestD = dist;
+            bestI = i;
+            bestJ = j;
+            bestEndI = endI;
+            bestEndJ = endJ;
+          }
+        }
+      }
+    }
+    if (bestI < 0) break;
+    const longer = pathLength(paths[bestI].points) >= pathLength(paths[bestJ].points) ? bestI : bestJ;
+    const left = bestEndI === 1 ? paths[bestI].points : paths[bestI].points.slice().reverse();
+    const right = bestEndJ === 0 ? paths[bestJ].points : paths[bestJ].points.slice().reverse();
+    paths[bestI] = { points: left.concat(right.slice(1)), ridge: paths[longer].ridge };
+    paths.splice(bestJ, 1);
+  }
+  return paths;
+}
+
+/** Reading order: start at the core and step to the neighboring path. */
+function chainPaths(items: LoosePath[], origin: Pt): LoosePath[] {
+  const pending = items.map((item) => ({ ...item, distance: medianDistance(item.points, origin), used: false }));
+  if (!pending.length) return [];
+  let current = pending.reduce((best, item) => (item.distance < best.distance ? item : best));
+  const ordered: LoosePath[] = [];
+  current.used = true;
+  ordered.push(current);
+  while (ordered.length < pending.length) {
+    let best: (typeof pending)[number] | null = null;
+    let bestScore = Infinity;
+    const ends = [current.points[0], current.points[current.points.length - 1]];
+    for (const item of pending) {
+      if (item.used) continue;
+      const tips = [item.points[0], item.points[item.points.length - 1]];
+      let near = Infinity;
+      for (const a of ends) {
+        for (const b of tips) near = Math.min(near, Math.hypot(a.x - b.x, a.y - b.y));
+      }
+      const score = near + Math.abs(item.distance - current.distance) * 0.45;
+      if (score < bestScore) {
+        bestScore = score;
+        best = item;
+      }
+    }
+    if (!best) break;
+    best.used = true;
+    ordered.push(best);
+    current = best;
+  }
+  return ordered;
+}
 
 function cleanLine(text: string | undefined) {
   return (text ?? "").replace(/\s+/g, " ").trim();
@@ -618,9 +778,9 @@ export function planPortrait(
         slots.push({ ridge: index, points: runs[mark.run] });
         continue;
       }
-      plans[index].push({ points: slice.points, text: mark.line, role: mark.role });
-      if (pathLength(slice.head) > period * 1.4) slots.push({ ridge: index, points: slice.head });
-      if (pathLength(slice.tail) > period * 1.4) slots.push({ ridge: index, points: slice.tail });
+      plans[index].push({ points: slice.points, text: mark.line, role: mark.role, order: mark.role === "core" ? -2 : -1 });
+      if (pathLength(slice.head) > period * 0.8) slots.push({ ridge: index, points: slice.head });
+      if (pathLength(slice.tail) > period * 0.8) slots.push({ ridge: index, points: slice.tail });
     }
     runs.forEach((run, runIndex) => {
       if (!marked.has(runIndex)) slots.push({ ridge: index, points: run });
@@ -628,23 +788,51 @@ export function planPortrait(
   });
 
   const source = bodySources(style.names, style.scriptures, lines);
-  // A short arc cannot hold a name or a readable run of a verse. Leave it off the page.
-  const bodySlots = slots.filter((slot) => pathLength(slot.points) >= period * 5.5);
-  const ceiling = bodySlots.reduce((max, slot) => Math.max(max, pathLength(slot.points)), 0);
-  const packed = packBodyRuns(
-    bodySlots.map((slot) => slot.points),
-    source.names,
-    source.verses,
-    (word) => measure(word, "body"),
-    gap,
-    { i: 0 },
-    { i: 0 },
-    ceiling,
-  );
-  packed.forEach((run, index) => {
-    if (!run.text) return;
-    plans[bodySlots[index].ridge].push({ points: run.points, text: run.text, role: "body" });
-  });
+  const welded = weldPaths(slots, Math.max(period * 8, ridgePitch(period) * 6));
+  const chained = chainPaths(welded, origin);
+  const probe = ["Lord", "bless", "you", "and", "keep", "you", "and", "give"];
+  const minLen = probe.reduce((sum, word, index) => sum + (index ? gap : 0) + measure(word, "body"), 0) + 6;
+  const neighborLimit = Math.max(36, ridgePitch(period) * 3.2);
+  const readable = chained.filter((slot) => pathLength(slot.points) >= minLen);
+  const groups: LoosePath[][] = [];
+  let group: LoosePath[] = [];
+  for (const item of readable) {
+    if (group.length) {
+      const prev = group[group.length - 1].points;
+      const next = item.points;
+      const ends = [prev[0], prev[prev.length - 1]];
+      const tips = [next[0], next[next.length - 1]];
+      let near = Infinity;
+      for (const a of ends) for (const b of tips) near = Math.min(near, Math.hypot(a.x - b.x, a.y - b.y));
+      if (near > neighborLimit) {
+        groups.push(group);
+        group = [];
+      }
+    }
+    group.push(item);
+  }
+  if (group.length) groups.push(group);
+  const nameCursor = { i: 0 };
+  const verseCursor = { i: 0 };
+  let order = 0;
+  for (const bodySlots of groups) {
+    if (!bodySlots.length) continue;
+    const ceiling = bodySlots.reduce((max, slot) => Math.max(max, pathLength(slot.points)), 0);
+    const packed = packBodyRuns(
+      bodySlots.map((slot) => slot.points),
+      source.names,
+      source.verses,
+      (word) => measure(word, "body"),
+      gap,
+      nameCursor,
+      verseCursor,
+      ceiling,
+    );
+    packed.forEach((run, index) => {
+      if (!run.text) return;
+      plans[bodySlots[index].ridge].push({ points: run.points, text: run.text, role: "body", order: order++ });
+    });
+  }
   return plans;
 }
 

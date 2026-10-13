@@ -1,6 +1,7 @@
 import { auditLayout, capHeight, legibleScale, type Check } from "./audit";
 import { auditFidelity } from "./fidelity";
 import { extractFromGray } from "./engine";
+import { pitchSep, ridgePitch } from "./lettering";
 import { buildPreviewSvg } from "./preview";
 import type { ExtractProfile, ExtractResult, PrintStyle, Pt, Ridge } from "./types";
 
@@ -43,14 +44,14 @@ export type PortraitResult = {
 type Profile = ExtractProfile & { id: string; flip?: boolean };
 
 /**
- * Text lines sit a little over twice the print's own ridge spacing apart,
- * so the oval stays airy. The flow still follows the print.
+ * The reconstructed field is seeded at about 1.4 line-heights. spacingLimit only
+ * drops a line that lands on top of another; it does not thin the oval.
  */
-export const OPEN_SEP = 3.2;
-const LOCKED: Profile = { id: "locked", inkDelta: 30, spacingLimit: 2.4, spacingHard: 1.7, sepFactor: OPEN_SEP };
-const TIGHTER: Profile = { id: "tighter", inkDelta: 30, spacingLimit: 2.7, spacingHard: 1.9, sepFactor: OPEN_SEP * 1.1 };
-const FULLER: Profile = { id: "fuller", inkDelta: 22, spacingLimit: 2.0, spacingHard: 1.4, sepFactor: OPEN_SEP * 0.82 };
-const FLIPPED: Profile = { id: "flipped", inkDelta: 30, spacingLimit: 2.4, spacingHard: 1.7, sepFactor: OPEN_SEP, flip: true };
+const FIELD_SEP = pitchSep(12);
+const LOCKED: Profile = { id: "locked", inkDelta: 30, spacingLimit: 0.72, spacingHard: 0.5, sepFactor: FIELD_SEP };
+const TIGHTER: Profile = { id: "tighter", inkDelta: 30, spacingLimit: 0.66, spacingHard: 0.46, sepFactor: FIELD_SEP * 0.9 };
+const FULLER: Profile = { id: "fuller", inkDelta: 22, spacingLimit: 0.6, spacingHard: 0.44, sepFactor: FIELD_SEP * 0.84 };
+const FLIPPED: Profile = { id: "flipped", inkDelta: 30, spacingLimit: 0.72, spacingHard: 0.5, sepFactor: FIELD_SEP, flip: true };
 
 /** The only attempts, in order. The first is the Randy print. Later ones run only if that one fails. */
 export const PORTRAIT_PROFILES: Profile[] = [LOCKED, TIGHTER, FULLER, FLIPPED];
@@ -281,6 +282,7 @@ function auditGeometry(result: ExtractResult): Check[] {
   const gaps: number[] = [];
   let close = 0;
   let seen = 0;
+  const pitch = ridgePitch(period);
   ridges.forEach((ridge, id) => {
     for (let i = 0; i < ridge.points.length; i += 4) {
       const point = ridge.points[i];
@@ -288,21 +290,42 @@ function auditGeometry(result: ExtractResult): Check[] {
       if (d > 1e8) continue;
       seen++;
       gaps.push(d);
-      if (d < period * 0.72) close++;
+      if (d < pitch * 0.58) close++;
     }
   });
   gaps.sort((a, b) => a - b);
   const spacingP50 = gaps.length ? gaps[Math.floor(gaps.length * 0.5)] : 0;
-  const closeFrac = seen ? close / seen : 1;
-  const spaced = closeFrac <= 0.3 && spacingP50 >= period * 2.15 && spacingP50 <= period * 3.6;
+  const closeAtPitch = seen ? close / seen : 1;
+  const spaced = closeAtPitch <= 0.3 && spacingP50 >= pitch * 0.72 && spacingP50 <= pitch * 1.28;
+
+  const holes: number[] = [];
+  const step = 5;
+  for (let y = 0; y < h; y += step) {
+    for (let x = 0; x < w; x += step) {
+      if (!mask[y * w + x]) continue;
+      const d = grid.nearest(x, y);
+      if (d > 1e8) continue;
+      holes.push(d);
+    }
+  }
+  holes.sort((a, b) => a - b);
+  const holeP90 = holes.length ? holes[Math.floor(holes.length * 0.9)] : pitch * 4;
+  const holeMax = holes.length ? holes[holes.length - 1] : pitch * 4;
+  const gapOk = holeP90 <= pitch * 0.92 && holeMax <= pitch * 2.6;
 
   return [
     { id: "inside-mask", label: "Text inside the silhouette", passed: inside, detail: inside ? "The words stay inside the ink." : `${Math.round(outsideFrac * 100)}% of the text sits outside the ink.` },
     {
       id: "spacing",
-      label: "Open spacing",
+      label: "Even ridge pitch",
       passed: spaced,
-      detail: `Typical gap ${spacingP50.toFixed(1)}px (${period ? (spacingP50 / period).toFixed(2) : "0"}× the print), ${Math.round(closeFrac * 100)}% of samples too close.`,
+      detail: `Typical gap ${spacingP50.toFixed(1)}px (${pitch ? (spacingP50 / pitch).toFixed(2) : "0"}× the line pitch), ${Math.round(closeAtPitch * 100)}% of samples too close.`,
+    },
+    {
+      id: "max-gap",
+      label: "No large gaps",
+      passed: gapOk,
+      detail: `The widest open spot is ${holeMax.toFixed(1)}px (${pitch ? (holeMax / pitch).toFixed(2) : "0"}× the line pitch). Nine tenths of the oval is within ${holeP90.toFixed(1)}px.`,
     },
   ];
 }
@@ -313,7 +336,7 @@ function attemptScore(checks: Check[]) {
 
 function unmatched(checks: Check[]): RetakeGuidance {
   const names = checks.find((check) => check.id === "names" && !check.passed);
-  const geometryIds = new Set(["coverage", "shape", "flow", "likeness", "inside-mask", "spacing"]);
+  const geometryIds = new Set(["coverage", "shape", "flow", "likeness", "inside-mask", "spacing", "max-gap"]);
   const geometryOk = checks.filter((check) => geometryIds.has(check.id)).every((check) => check.passed);
   if (names && geometryOk) {
     return retake(

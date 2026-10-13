@@ -432,7 +432,7 @@ export function StudioClient({
           <span>Scriptures, one verse per line</span>
           <textarea className="verses" value={(style.scriptures ?? []).join("\n")} onChange={(event) => setStyle({ ...style, scriptures: event.target.value.split("\n") })} />
         </label>
-        <p className="note">Every ridge is text, in one small size, with open space between the lines. Verses run whole along the ridges and end with their reference. Names stay whole. The two dedications follow the innermost ridges in that same size. Short ridges are left blank.</p>
+        <p className="note">Every ridge is text, in one small size, packed in even rows that follow the print. Verses run whole along consecutive ridges and end with their reference. Names stay whole. The two dedications follow the innermost ridges in that same size. A line shorter than a full phrase is left off.</p>
         <label className="field"><span>Line under the portrait</span><input type="text" value={style.footer ?? ""} onChange={(event) => setStyle({ ...style, footer: event.target.value })} /></label>
         <label className="field"><span>Script line, if the footer is empty</span><input type="text" value={style.script} onChange={(event) => setStyle({ ...style, script: event.target.value })} /></label>
         <details open={linesOpen} onToggle={(event) => setLinesOpen(event.currentTarget.open)}>

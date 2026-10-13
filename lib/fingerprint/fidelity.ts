@@ -1,16 +1,15 @@
 import { pathLength, slicePath } from "./geometry";
-import { estimateWordWidth, fontSizeFor, planPortrait, roleScale } from "./lettering";
+import { estimateWordWidth, fontSizeFor, planPortrait, ridgePitch, roleScale } from "./lettering";
 import { fontById } from "./preview";
 import type { Check } from "./audit";
 import type { ExtractResult, PrintStyle, Pt } from "./types";
 
 /**
- * A silhouette pixel counts as covered when a line of text passes within this
- * many of the print's own ridge-periods. The drawn lines are spaced wider than
- * the ink on purpose, so the reach covers the white gap between them and still
- * leaves an empty half of the oval uncovered.
+ * A silhouette pixel counts as covered when text passes within this fraction of
+ * the line pitch. That reaches across the valley between even rows. A wide
+ * white gap, about two missing rows, stays uncovered.
  */
-const COVER_REACH = 2.45;
+const COVER_REACH = 1.05;
 const COVER_MIN = 0.95;
 const IOU_MIN = 0.9;
 const FLOW_MIN = 0.72;
@@ -77,7 +76,7 @@ function textSpans(result: ExtractResult, style: PrintStyle) {
   const ridges = result.ridges;
   const period = result.period;
   const font = fontById(style.font);
-  const ratio = Math.max(font.charRatio, 0.62);
+  const ratio = font.charRatio;
   const fontSize = fontSizeFor(period, style.textScale || 1, font.capEm);
   const planned = planPortrait(
     ridges,
@@ -208,7 +207,7 @@ export function scoreFidelity(result: ExtractResult, style: PrintStyle): Fidelit
   if (!mask || !gray || !orient || !coherence || period < 4 || result.ridges.length < 8) return null;
 
   const spans = textSpans(result, style);
-  const reach = period * COVER_REACH;
+  const reach = ridgePitch(period) * COVER_REACH;
   const near = paintNear(spans, w, h, reach);
   // Spill uses the text itself, not the coverage halo, so a print that fills
   // its oval is not punished for the reach used to test empty regions.
@@ -318,9 +317,9 @@ export function auditFidelity(result: ExtractResult, style: PrintStyle): Check[]
   return [
     {
       id: "coverage",
-      label: "Coverage of the silhouette",
+      label: "Oval density",
       passed: score.coverage >= COVER_MIN,
-      detail: `${pct(score.coverage)} of the ink silhouette is within reach of a line of text. Target ${pct(COVER_MIN)}.`,
+      detail: `${pct(score.coverage)} of the oval is within reach of a line of text. Target ${pct(COVER_MIN)}.`,
     },
     {
       id: "shape",

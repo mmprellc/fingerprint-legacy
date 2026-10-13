@@ -156,6 +156,22 @@ async function main() {
   if (dotted.find((check) => check.id === "no-fillers")?.passed) {
     throw new Error("The filler check did not catch a divider");
   }
+  const fragment = auditLayout(
+    `<svg><text class="ridge ridge-body" font-size="12"><textPath>make His face shine</textPath></text></svg>`,
+    shortStyle,
+    12,
+  );
+  if (fragment.find((check) => check.id === "min-segment")?.passed) {
+    throw new Error("The segment check did not catch a short fragment");
+  }
+  const chopped = auditLayout(
+    `<svg><text class="ridge ridge-body" font-size="12"><textPath>choose you always</textPath></text></svg>`,
+    shortStyle,
+    12,
+  );
+  if (chopped.find((check) => check.id === "verse-continuity")?.passed) {
+    throw new Error("The verse check did not catch a phrase that starts mid-verse");
+  }
 
   const randy = fs.readFileSync(sourcePath);
   const whorl = synthesizePrint("whorl");

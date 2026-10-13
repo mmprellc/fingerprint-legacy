@@ -220,7 +220,7 @@ export function transformPoints(points: Pt[], m: { tx: number; ty: number; rotat
 
 /** Join ridge endings that face each other across a short gap, so a broken skeleton becomes one continuous path. */
 export function joinRidges(ridges: Ridge[], period: number): Ridge[] {
-  const maxGap = Math.max(6, period * 1.35);
+  const maxGap = Math.max(12, period * 10);
   type Item = { points: Pt[]; closed: boolean };
   const items: Item[] = ridges
     .filter((ridge) => ridge.points.length > 1)
@@ -260,9 +260,9 @@ export function joinRidges(ridges: Ridge[], period: number): Ridge[] {
             if (dist < 1.5 || dist >= bestD) continue;
             const ux = dx / dist;
             const uy = dy / dist;
-            if (dir.x * ux + dir.y * uy < 0.82) continue;
+            if (dir.x * ux + dir.y * uy < 0.55) continue;
             const dirJ = outward(items[j].points, endJ);
-            if (dirJ.x * ux + dirJ.y * uy > -0.55) continue;
+            if (dirJ.x * ux + dirJ.y * uy > -0.25) continue;
             bestD = dist;
             bestI = i;
             bestJ = j;

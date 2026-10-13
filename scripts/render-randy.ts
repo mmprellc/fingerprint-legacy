@@ -3,7 +3,7 @@ import path from "node:path";
 import sharp from "sharp";
 import { rgbaToGray } from "../lib/fingerprint/engine";
 import { producePortrait } from "../lib/fingerprint/pipeline";
-import { printCore } from "../lib/fingerprint/lettering";
+import { printCore, ridgePitch } from "../lib/fingerprint/lettering";
 import { buildPreviewSvg, mapPrint } from "../lib/fingerprint/preview";
 import { renderArtwork } from "../lib/fingerprint/render-print";
 import { RANDY_CZYZ_NAMES, RANDY_CZYZ_SCRIPTURES, randyCzyzStyle } from "../lib/pieces";
@@ -193,10 +193,11 @@ async function main() {
   const cover = stats.hit / Math.max(1, stats.ink);
   const inkSpan = Math.max(1, stats.inkMaxY - stats.inkMinY);
   const ridgeSpan = stats.ridgeMaxY - stats.ridgeMinY;
-  if (cover < 0.9) throw new Error("Text ridges do not span the ink oval");
+  const pitch = ridgePitch(result.period);
+  if (cover < 0.95) throw new Error("Text ridges do not fill the ink oval");
   if (ridgeSpan < inkSpan * 0.9) throw new Error("Ridges do not reach the top and bottom of the print");
-  if (stats.spacingP50 < result.period * 2.15 || stats.spacingP50 > result.period * 3.6) {
-    throw new Error(`Ridge spacing ${stats.spacingP50.toFixed(2)} is off the open gap for period ${result.period.toFixed(2)}`);
+  if (stats.spacingP50 < pitch * 0.72 || stats.spacingP50 > pitch * 1.28) {
+    throw new Error(`Ridge spacing ${stats.spacingP50.toFixed(2)} is off the ${pitch.toFixed(2)}px line pitch`);
   }
   if (stats.closeFrac > 0.3) throw new Error("Too many ridge samples sit on top of a neighbor");
 }
@@ -266,7 +267,7 @@ function coverageStats(gray: Float32Array, w: number, h: number, ridges: Ridge[]
       if (gray[y * w + x] >= paper - 28) continue;
       ink++;
       inkYs.push(y);
-      if (nearest(x, y) <= period * 1.9) hit++;
+      if (nearest(x, y) <= ridgePitch(period) * 1.05) hit++;
     }
   }
   inkYs.sort((a, b) => a - b);

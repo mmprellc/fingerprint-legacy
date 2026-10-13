@@ -125,26 +125,30 @@ export function buildPreviewSvg(
       period,
       (word, role) => {
         const size = fontSize * roleScale(role);
-        return estimateWordWidth(word, size, Math.max(font.charRatio, 0.62), -size * (role === "body" ? 0.04 : 0.045));
+        return estimateWordWidth(word, size, font.charRatio, -size * (role === "body" ? 0.04 : 0.045));
       },
       bodySize * 0.16,
     );
+    const emit: { ridgeIndex: number; run: (typeof planned)[number][number] }[] = [];
     planned.forEach((runs, ridgeIndex) => {
-      const rim = rims[ridgeIndex] ?? 0;
-      const fill = rim > 0.35 ? "#1A1C1E" : preset.ink;
-      for (const run of runs) {
-        if (!run.text) continue;
-        const size = fontSize * roleScale(run.role);
-        const ink = run.role === "body" ? fill : "#1A1C1E";
-        const id = `r${index++}`;
-        defs.push(`<path id="${id}" d="${toPathD(run.points)}"/>`);
-        const dy = (size * 0.38).toFixed(2);
-        const tracking = run.role === "body" ? -size * 0.04 : -size * 0.045;
-        texts.push(
-          `<text class="ridge ridge-${run.role}" font-size="${size.toFixed(2)}" letter-spacing="${tracking.toFixed(2)}" fill="${ink}" font-family="${escapeXml(opts?.fontFamily || font.family)}"><textPath href="#${id}" dy="${dy}">${escapeXml(run.text)}</textPath></text>`,
-        );
-      }
+      for (const run of runs) emit.push({ ridgeIndex, run });
     });
+    emit.sort((a, b) => a.run.order - b.run.order);
+    for (const item of emit) {
+      const run = item.run;
+      if (!run.text) continue;
+      const rim = rims[item.ridgeIndex] ?? 0;
+      const fill = rim > 0.35 ? "#1A1C1E" : preset.ink;
+      const size = fontSize * roleScale(run.role);
+      const ink = run.role === "body" ? fill : "#1A1C1E";
+      const id = `r${index++}`;
+      defs.push(`<path id="${id}" d="${toPathD(run.points)}"/>`);
+      const dy = (size * 0.38).toFixed(2);
+      const tracking = run.role === "body" ? -size * 0.04 : -size * 0.045;
+      texts.push(
+        `<text class="ridge ridge-${run.role}" font-size="${size.toFixed(2)}" letter-spacing="${tracking.toFixed(2)}" fill="${ink}" font-family="${escapeXml(opts?.fontFamily || font.family)}"><textPath href="#${id}" dy="${dy}">${escapeXml(run.text)}</textPath></text>`,
+      );
+    }
   }
   const footerText = style.footer || style.script || "";
   const title = style.title
