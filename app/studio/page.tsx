@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { occasionBySlug, occasions } from "@/lib/content";
 import { pieceBySlug } from "@/lib/pieces";
+import { isFrameFinish } from "@/lib/frames";
 import { productById } from "@/lib/products";
 import { StudioClient } from "./studio-client";
 
@@ -13,6 +14,7 @@ export default async function StudioPage({ searchParams }: { searchParams: Promi
   const pieceSlug = typeof params.piece === "string" ? params.piece : "";
   const piece = pieceBySlug(pieceSlug);
   const product = typeof params.product === "string" && productById(params.product).available ? params.product : "digital";
+  const frame = typeof params.frame === "string" && isFrameFinish(params.frame) ? params.frame : "black";
   const couple = !piece && (params.couple === "1" || Boolean(occasion?.couple && params.sample !== "1"));
   const autoload = Boolean(piece) || params.sample === "1" || Boolean(occasion && !couple);
   return (
@@ -25,6 +27,7 @@ export default async function StudioPage({ searchParams }: { searchParams: Promi
         initialOccasion={occasion}
         initialPiece={piece}
         initialProduct={product}
+        initialFrame={frame}
         autoload={autoload && !couple}
         couple={couple}
         occasions={occasions}

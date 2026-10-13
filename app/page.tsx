@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { FramedExamples } from "@/components/FramedExamples";
 import { galleryPieces, occasions, sentiments, steps } from "@/lib/content";
 
 const virtues = [
@@ -93,6 +94,14 @@ export default function HomePage() {
           ))}
         </div>
         <p><Link className="btn-ghost" href="/gallery">View the gallery</Link></p>
+      </section>
+
+      <section className="band">
+        <p className="kicker">In a frame</p>
+        <h2>Randy Czyz, held in the moulding.</h2>
+        <p className="lede">The same portrait, in the black, white, and natural wood frames a framed print can ship in.</p>
+        <FramedExamples src="/pieces/randy-czyz.png" title="Randy Czyz" />
+        <p><Link className="btn-ghost" href="/studio?piece=randy-czyz&product=framed">See it in the studio</Link></p>
       </section>
 
       <section className="band">

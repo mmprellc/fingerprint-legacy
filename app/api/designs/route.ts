@@ -3,6 +3,7 @@ import { renderArtwork } from "@/lib/fingerprint/render-print";
 import type { PreviewPrint } from "@/lib/fingerprint/preview";
 import type { PrintStyle, Ridge } from "@/lib/fingerprint/types";
 import { productById } from "@/lib/products";
+import { isFrameFinish } from "@/lib/frames";
 import { HostingConfigError } from "@/lib/runtime";
 import { newId, saveDesign, savePreview } from "@/lib/store";
 
@@ -16,6 +17,7 @@ export async function POST(request: Request) {
     period?: number;
     productId?: string;
     sizeId?: string;
+    frameId?: string;
   } | null;
   const prints = sanitizePrints(body?.prints);
   if (!prints.length) {
@@ -36,6 +38,7 @@ export async function POST(request: Request) {
     period,
     productId: product.id,
     sizeId: size.id,
+    ...(product.id === "framed" && isFrameFinish(body?.frameId) ? { frameId: body.frameId } : {}),
   };
   try {
     await saveDesign(design);

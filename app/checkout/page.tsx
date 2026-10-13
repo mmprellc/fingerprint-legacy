@@ -42,12 +42,12 @@ export default async function CheckoutPage({ searchParams }: { searchParams: Pro
       <p className="kicker">Checkout</p>
       <h1>Review the piece.</h1>
       {error ? <p className="alert">{messageFor(error)}</p> : null}
-      <div className="split">
-        <img src={`/api/designs/${design.id}/preview`} alt="Preview of the portrait about to be ordered" />
-        <CheckoutForm
+      <CheckoutForm
           designId={design.id}
           productId={product.available ? product.id : "digital"}
           sizeId={design.sizeId}
+          frameId={design.frameId || "black"}
+          imageUrl={`/api/designs/${design.id}/preview`}
           products={buyableProducts.map((item) => ({
             id: item.id,
             name: item.name,
@@ -57,7 +57,6 @@ export default async function CheckoutPage({ searchParams }: { searchParams: Pro
           }))}
           mock={paymentsMode() === "mock"}
         />
-      </div>
     </article>
   );
 }

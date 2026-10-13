@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { FramedExamples } from "@/components/FramedExamples";
 import { galleryPieces } from "@/lib/content";
 
 export const metadata: Metadata = { title: "Gallery" };
@@ -21,6 +22,12 @@ export default function GalleryPage() {
           </Link>
         ))}
       </div>
+      <section className="band">
+        <p className="kicker">Framed</p>
+        <h2>Randy Czyz in the frame.</h2>
+        <p>Black, white, and natural wood. These are the framed-poster finishes, drawn here without a print key. A Printful photograph takes their place when one is configured.</p>
+        <FramedExamples src="/pieces/randy-czyz.png" title="Randy Czyz" />
+      </section>
       <p><Link className="btn-gold" href="/studio">Open the studio</Link></p>
     </article>
   );

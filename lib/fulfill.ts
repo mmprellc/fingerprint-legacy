@@ -1,5 +1,6 @@
 import JSZip from "jszip";
 import { orderObjectKey, putBytes, signedFileUrl } from "./files";
+import { framedVariantId } from "./frames";
 import { productById } from "./products";
 import { renderArtwork } from "./fingerprint/render-print";
 import { isProductionDeploy, requiresDurableStorage } from "./runtime";
@@ -142,13 +143,16 @@ async function submitPrintful(order: Order, envName: "PRINTFUL_VARIANT_ARCHIVAL"
       error: "Set PRINTFUL_STORE_ID to the store id from the Printful dashboard.",
     };
   }
-  const variantRaw = envName ? process.env[envName] : "";
-  const variantId = Number(variantRaw);
+  const variantId = order.productId === "framed"
+    ? framedVariantId(order.frameId, order.sizeId)
+    : Number(envName ? process.env[envName] : "");
   if (!variantId) {
     return {
       mode: "live" as const,
       status: "needs_variant",
-      error: `Set ${envName} to a Printful catalog variant id before live orders can be submitted.`,
+      error: envName
+        ? `Set ${envName} to a Printful catalog variant id before live orders can be submitted.`
+        : "Choose a frame and size before the print can be submitted.",
     };
   }
   const shipping = order.shipping;
