@@ -24,6 +24,46 @@ type Draft = {
 
 type SampleFile = { width: number; height: number; period: number; ridges: Ridge[] };
 
+const UPLOAD_EDGE = 1600;
+const UPLOAD_BUDGET = 3_800_000;
+
+function canvasToJpeg(canvas: HTMLCanvasElement, quality: number) {
+  return new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+}
+
+/** Vercel rejects request bodies over 4.5 MB. The server already scales the long edge to 1600. */
+async function shrinkForUpload(file: File) {
+  if (file.size <= UPLOAD_BUDGET) return file;
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch {
+    throw new Error("That photo is too large to upload. Export a JPEG and try again.");
+  }
+  const long = Math.max(bitmap.width, bitmap.height);
+  const scale = long > UPLOAD_EDGE ? UPLOAD_EDGE / long : 1;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  const context = canvas.getContext("2d");
+  if (!context) {
+    bitmap.close();
+    return file;
+  }
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  bitmap.close();
+  let quality = 0.86;
+  let blob = await canvasToJpeg(canvas, quality);
+  while (blob && blob.size > UPLOAD_BUDGET && quality > 0.5) {
+    quality -= 0.12;
+    blob = await canvasToJpeg(canvas, quality);
+  }
+  if (!blob || blob.size > UPLOAD_BUDGET) {
+    throw new Error("That photo is too large to upload. Export a JPEG and try again.");
+  }
+  return new File([blob], "print.jpg", { type: "image/jpeg" });
+}
+
 export function StudioClient({
   initialOccasion,
   initialPiece,
@@ -201,8 +241,9 @@ export function StudioClient({
     setError("");
     stopCamera();
     try {
+      const prepared = await shrinkForUpload(file);
       const body = new FormData();
-      body.set("file", file);
+      body.set("file", prepared);
       body.set("ridges", tone);
       body.set("style", JSON.stringify(style));
       const response = await fetch("/api/studio/extract", { method: "POST", body });

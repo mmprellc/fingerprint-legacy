@@ -1,31 +1,38 @@
 import { NextResponse } from "next/server";
 import { paymentsMode } from "@/lib/fulfill";
 import { productById } from "@/lib/products";
+import { publicOrigin } from "@/lib/runtime";
 import { getDesign, createOrder, type Shipping } from "@/lib/store";
-import { getStripe, integrationIdentifier } from "@/lib/stripe";
+import { checkoutBlockedReason, getStripe, integrationIdentifier } from "@/lib/stripe";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
   const form = await request.formData();
   const designId = String(form.get("designId") || "");
+  const origin = publicOrigin(request);
+  const requestOrigin = new URL(request.url).origin;
+  const blocked = checkoutBlockedReason();
+  if (blocked) {
+    console.error(blocked);
+    return NextResponse.redirect(new URL(`/checkout?design=${designId}&error=payments`, requestOrigin), 303);
+  }
   const design = await getDesign(designId);
-  const origin = new URL(request.url).origin;
   if (!design) {
-    return NextResponse.redirect(new URL("/studio", origin), 303);
+    return NextResponse.redirect(new URL("/studio", requestOrigin), 303);
   }
   const email = String(form.get("email") || "").trim();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    return NextResponse.redirect(new URL(`/checkout?design=${designId}&error=email`, origin), 303);
+    return NextResponse.redirect(new URL(`/checkout?design=${designId}&error=email`, requestOrigin), 303);
   }
   const product = productById(String(form.get("productId") || design.productId));
   if (!product.available) {
-    return NextResponse.redirect(new URL(`/checkout?design=${designId}&error=product`, origin), 303);
+    return NextResponse.redirect(new URL(`/checkout?design=${designId}&error=product`, requestOrigin), 303);
   }
   const size = product.sizes.find((item) => item.id === String(form.get("sizeId") || "")) ?? product.sizes[0];
   const shipping = readShipping(form);
   if (product.fulfillment === "printful" && paymentsMode() === "mock" && !shipping.address1) {
-    return NextResponse.redirect(new URL(`/checkout?design=${designId}&error=address`, origin), 303);
+    return NextResponse.redirect(new URL(`/checkout?design=${designId}&error=address`, requestOrigin), 303);
   }
 
   const order = await createOrder({
@@ -40,7 +47,7 @@ export async function POST(request: Request) {
 
   const stripe = getStripe();
   if (!stripe) {
-    return NextResponse.redirect(new URL(`/checkout/mock?order=${order.id}`, origin), 303);
+    return NextResponse.redirect(new URL(`/checkout/mock?order=${order.id}`, requestOrigin), 303);
   }
 
   const session = await stripe.checkout.sessions.create({
@@ -83,7 +90,7 @@ export async function POST(request: Request) {
     current.stripeSessionId = session.id;
   });
   if (!session.url) {
-    return NextResponse.redirect(new URL(`/checkout?design=${designId}&error=stripe`, origin), 303);
+    return NextResponse.redirect(new URL(`/checkout?design=${designId}&error=stripe`, requestOrigin), 303);
   }
   return NextResponse.redirect(session.url, 303);
 }

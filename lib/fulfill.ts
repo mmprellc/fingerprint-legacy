@@ -1,20 +1,19 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import JSZip from "jszip";
+import { orderObjectKey, putBytes, signedFileUrl } from "./files";
 import { productById } from "./products";
 import { renderArtwork } from "./fingerprint/render-print";
+import { isProductionDeploy, requiresDurableStorage } from "./runtime";
+import { secretKeyMode } from "./stripe";
 import {
   getDesign,
   getOrder,
-  orderFileDir,
-  signDownload,
   updateOrder,
   type Order,
   type Shipping,
 } from "./store";
 
 export function paymentsMode(): "mock" | "stripe" {
-  return process.env.STRIPE_SECRET_KEY ? "stripe" : "mock";
+  return secretKeyMode() === "unset" ? "mock" : "stripe";
 }
 
 export function printfulMode(): "mock" | "live" {
@@ -40,19 +39,24 @@ export async function fulfillOrder(orderId: string) {
       dpi: size.inches ? 200 : 160,
       frame: product.id === "framed",
     });
-    const dir = orderFileDir(orderId);
-    await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(path.join(dir, "portrait.svg"), art.svg);
-    await fs.writeFile(path.join(dir, "portrait.png"), art.png);
-    await fs.writeFile(path.join(dir, "portrait.pdf"), art.pdf);
     const zip = new JSZip();
     zip.file("portrait.svg", art.svg);
     zip.file("portrait.png", art.png);
     zip.file("portrait.pdf", art.pdf);
-    await fs.writeFile(path.join(dir, "portrait.zip"), await zip.generateAsync({ type: "nodebuffer" }));
+    const zipBuffer = await zip.generateAsync({ type: "nodebuffer" });
+    const written: Array<[string, string, Buffer]> = [
+      ["svg", "image/svg+xml", Buffer.from(art.svg)],
+      ["png", "image/png", art.png],
+      ["pdf", "application/pdf", art.pdf],
+      ["zip", "application/zip", zipBuffer],
+    ];
+    for (const [kind, contentType, body] of written) {
+      const key = orderObjectKey(orderId, kind);
+      if (!key) throw new Error("Invalid order id");
+      await putBytes(key, body, contentType);
+    }
 
-    const origin = process.env.PUBLIC_BASE_URL || "";
-    const token = signDownload(orderId);
+    const origin = (process.env.PUBLIC_BASE_URL || "").trim();
     const link = origin
       ? `${origin.replace(/\/$/, "")}/orders/${orderId}`
       : `Order ${orderId}`;
@@ -117,10 +121,25 @@ async function sendDownloadEmail(to: string, order: Order, link: string) {
 async function submitPrintful(order: Order, envName: "PRINTFUL_VARIANT_ARCHIVAL" | "PRINTFUL_VARIANT_FRAMED" | undefined, inches: [number, number] | null) {
   const key = process.env.PRINTFUL_API_KEY;
   if (!key) {
+    if (requiresDurableStorage()) {
+      return {
+        mode: "live" as const,
+        status: "not_configured",
+        error: "Set PRINTFUL_API_KEY, PRINTFUL_STORE_ID, and the variant ids before a paid print can ship.",
+      };
+    }
     return {
       mode: "mock" as const,
       id: `mock_${order.id}`,
       status: "draft",
+    };
+  }
+  const storeId = (process.env.PRINTFUL_STORE_ID || "").trim();
+  if (!storeId && isProductionDeploy()) {
+    return {
+      mode: "live" as const,
+      status: "needs_store",
+      error: "Set PRINTFUL_STORE_ID to the store id from the Printful dashboard.",
     };
   }
   const variantRaw = envName ? process.env[envName] : "";
@@ -136,21 +155,23 @@ async function submitPrintful(order: Order, envName: "PRINTFUL_VARIANT_ARCHIVAL"
   if (!shipping?.address1 || !shipping.city || !shipping.country || !shipping.postal) {
     return { mode: "live" as const, status: "needs_address", error: "A shipping address is required for the print." };
   }
-  const origin = process.env.PUBLIC_BASE_URL;
-  if (!origin) {
+  const pngKey = orderObjectKey(order.id, "png");
+  const signed = pngKey ? await signedFileUrl(pngKey, 6 * 60 * 60) : null;
+  const origin = (process.env.PUBLIC_BASE_URL || "").trim().replace(/\/$/, "");
+  const fileUrl = signed || (origin ? `${origin}/api/orders/${order.id}/files/png` : "");
+  if (!fileUrl) {
     return {
       mode: "live" as const,
       status: "needs_public_url",
       error: "Set PUBLIC_BASE_URL so Printful can fetch the print file.",
     };
   }
-  const fileUrl = `${origin.replace(/\/$/, "")}/api/orders/${order.id}/files/png`;
   const response = await fetch("https://api.printful.com/orders", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${key}`,
       "Content-Type": "application/json",
-      ...(process.env.PRINTFUL_STORE_ID ? { "X-PF-Store-Id": process.env.PRINTFUL_STORE_ID } : {}),
+      ...(storeId ? { "X-PF-Store-Id": storeId } : {}),
     },
     body: JSON.stringify({
       external_id: order.id,
@@ -200,16 +221,4 @@ export async function markPaid(orderId: string, sessionId?: string) {
     if (order.status === "pending") order.status = "paid";
     if (sessionId) order.stripeSessionId = sessionId;
   });
-}
-
-export function orderFilePath(orderId: string, kind: string) {
-  const names: Record<string, string> = {
-    svg: "portrait.svg",
-    png: "portrait.png",
-    pdf: "portrait.pdf",
-    zip: "portrait.zip",
-  };
-  const name = names[kind];
-  if (!name) return null;
-  return path.join(orderFileDir(orderId), name);
 }

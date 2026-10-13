@@ -3,6 +3,7 @@ import { renderArtwork } from "@/lib/fingerprint/render-print";
 import type { PreviewPrint } from "@/lib/fingerprint/preview";
 import type { PrintStyle, Ridge } from "@/lib/fingerprint/types";
 import { productById } from "@/lib/products";
+import { HostingConfigError } from "@/lib/runtime";
 import { newId, saveDesign, savePreview } from "@/lib/store";
 
 export const runtime = "nodejs";
@@ -36,7 +37,15 @@ export async function POST(request: Request) {
     productId: product.id,
     sizeId: size.id,
   };
-  await saveDesign(design);
+  try {
+    await saveDesign(design);
+  } catch (error) {
+    if (error instanceof HostingConfigError) {
+      console.error(error.message);
+      return NextResponse.json({ error: "The studio cannot save a portrait yet." }, { status: 503 });
+    }
+    throw error;
+  }
   try {
     const preview = await renderArtwork({
       prints,
