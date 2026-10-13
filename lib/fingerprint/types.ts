@@ -67,6 +67,7 @@ export type InkPreset = {
 };
 
 export const INK_PRESETS: InkPreset[] = [
+  { id: "ink", label: "Black", ink: "#111111", paper: "#FFFFFF" },
   { id: "charcoal", label: "Charcoal", ink: "#34383A", paper: "#F6F1E8" },
   { id: "gold", label: "Antique gold", ink: "#8C7344", paper: "#F6F1E8" },
   { id: "slate", label: "Slate", ink: "#66798A", paper: "#F6F1E8" },
@@ -89,7 +90,7 @@ export type PrintStyle = {
   /** Primary dedication, set along the innermost core ridges. */
   centerName?: string;
   centerDetail?: string;
-  /** Second dedication, on the next ridges out, same size as the names and a little darker. */
+  /** Second dedication, on the next ridge out, same size as the names. */
   secondaryName?: string;
   secondaryDetail?: string;
   /** Names repeated along the ridges, one phrase each. Spelled as given. */
@@ -98,19 +99,25 @@ export type PrintStyle = {
   scriptures?: string[];
 };
 
-export const FONTS: { id: RidgeFontId; label: string; file: string; family: string; charRatio: number }[] = [
-  {
-    id: "baskerville",
-    label: "Baskerville",
-    file: "LibreBaskerville-Bold.ttf",
-    family: "Libre Baskerville",
-    charRatio: 0.56,
-  },
+export const FONTS: { id: RidgeFontId; label: string; file: string; family: string; charRatio: number; capEm: number }[] = [
   {
     id: "cormorant",
     label: "Cormorant",
-    file: "CormorantGaramond-SemiBold.ttf",
+    file: "CormorantGaramond-Regular.ttf",
     family: "Cormorant Garamond",
-    charRatio: 0.42,
+    charRatio: 0.4,
+    capEm: 0.625,
+  },
+  {
+    id: "baskerville",
+    label: "Baskerville",
+    file: "LibreBaskerville-Regular.ttf",
+    family: "Libre Baskerville",
+    charRatio: 0.52,
+    capEm: 0.77,
   },
 ];
+
+/** The portrait defaults to the open black-on-white piece: a thin serif, one small size. */
+export const DEFAULT_FONT: RidgeFontId = "cormorant";
+export const DEFAULT_PRESET = "ink";

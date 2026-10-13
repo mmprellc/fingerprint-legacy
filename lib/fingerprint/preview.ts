@@ -80,7 +80,7 @@ export function buildPreviewSvg(
 ) {
   const preset = presetById(style.preset);
   const font = fontById(style.font);
-  const fontSize = fontSizeFor(period, style.textScale || 1);
+  const fontSize = fontSizeFor(period, style.textScale || 1, font.capEm);
   const mapped = prints.map(mapPrint);
   let maxX = opts?.frame?.width ?? 1;
   let maxY = opts?.frame?.height ?? 1;

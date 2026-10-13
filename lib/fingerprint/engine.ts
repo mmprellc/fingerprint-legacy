@@ -1446,7 +1446,9 @@ function streamlineRidges(
   const st = stats(enhanced, mask);
   const snapFloor = st.mean - 0.02 * st.std;
   const dsep = period * sepFactor;
-  const dtest = period * 0.74 * sepFactor;
+  // Stop only when a line actually meets another line. The open gap is the
+  // seed spacing above, not a reason to cut a ridge short.
+  const dtest = period * 0.74;
   const step = 0.85;
   const committed = new SepGrid(period * 0.42);
   const angAt = (x: number, y: number) => {

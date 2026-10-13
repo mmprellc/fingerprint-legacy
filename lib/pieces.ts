@@ -1,4 +1,4 @@
-import type { PrintStyle } from "./fingerprint/types";
+import { DEFAULT_FONT, DEFAULT_PRESET, type PrintStyle } from "./fingerprint/types";
 
 /** Spelled exactly as given, including the repeated names. */
 export const RANDY_CZYZ_NAMES = [
@@ -41,8 +41,8 @@ export const RANDY_CZYZ_SCRIPTURES = [
 ];
 
 export const randyCzyzStyle: PrintStyle = {
-  font: "baskerville",
-  preset: "charcoal",
+  font: DEFAULT_FONT,
+  preset: DEFAULT_PRESET,
   textScale: 1,
   title: "Randy Czyz Fingerprint Legacy",
   script: "",

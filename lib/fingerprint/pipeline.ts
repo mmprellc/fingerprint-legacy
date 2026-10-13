@@ -42,10 +42,15 @@ export type PortraitResult = {
 
 type Profile = ExtractProfile & { id: string; flip?: boolean };
 
-const LOCKED: Profile = { id: "locked", inkDelta: 30, spacingLimit: 0.82, spacingHard: 0.62, sepFactor: 1 };
-const TIGHTER: Profile = { id: "tighter", inkDelta: 30, spacingLimit: 0.9, spacingHard: 0.72, sepFactor: 1.06 };
-const FULLER: Profile = { id: "fuller", inkDelta: 22, spacingLimit: 0.74, spacingHard: 0.54, sepFactor: 0.92 };
-const FLIPPED: Profile = { id: "flipped", inkDelta: 30, spacingLimit: 0.82, spacingHard: 0.62, sepFactor: 1, flip: true };
+/**
+ * Text lines sit a little over twice the print's own ridge spacing apart,
+ * so the oval stays airy. The flow still follows the print.
+ */
+export const OPEN_SEP = 3.2;
+const LOCKED: Profile = { id: "locked", inkDelta: 30, spacingLimit: 2.4, spacingHard: 1.7, sepFactor: OPEN_SEP };
+const TIGHTER: Profile = { id: "tighter", inkDelta: 30, spacingLimit: 2.7, spacingHard: 1.9, sepFactor: OPEN_SEP * 1.1 };
+const FULLER: Profile = { id: "fuller", inkDelta: 22, spacingLimit: 2.0, spacingHard: 1.4, sepFactor: OPEN_SEP * 0.82 };
+const FLIPPED: Profile = { id: "flipped", inkDelta: 30, spacingLimit: 2.4, spacingHard: 1.7, sepFactor: OPEN_SEP, flip: true };
 
 /** The only attempts, in order. The first is the Randy print. Later ones run only if that one fails. */
 export const PORTRAIT_PROFILES: Profile[] = [LOCKED, TIGHTER, FULLER, FLIPPED];
@@ -207,8 +212,9 @@ class PointGrid {
     const gx = Math.floor(x / this.cell);
     const gy = Math.floor(y / this.cell);
     let best = 1e9;
-    for (let dy = -5; dy <= 5; dy++) {
-      for (let dx = -5; dx <= 5; dx++) {
+    const window = 10;
+    for (let dy = -window; dy <= window; dy++) {
+      for (let dx = -window; dx <= window; dx++) {
         const bucket = this.buckets.get(`${gx + dx},${gy + dy}`);
         if (!bucket) continue;
         for (const point of bucket) {
@@ -288,15 +294,15 @@ function auditGeometry(result: ExtractResult): Check[] {
   gaps.sort((a, b) => a - b);
   const spacingP50 = gaps.length ? gaps[Math.floor(gaps.length * 0.5)] : 0;
   const closeFrac = seen ? close / seen : 1;
-  const spaced = closeFrac <= 0.3 && spacingP50 >= period * 0.75 && spacingP50 <= period * 1.45;
+  const spaced = closeFrac <= 0.3 && spacingP50 >= period * 2.15 && spacingP50 <= period * 3.6;
 
   return [
     { id: "inside-mask", label: "Text inside the silhouette", passed: inside, detail: inside ? "The words stay inside the ink." : `${Math.round(outsideFrac * 100)}% of the text sits outside the ink.` },
     {
       id: "spacing",
-      label: "Collision-free spacing",
+      label: "Open spacing",
       passed: spaced,
-      detail: `Typical gap ${spacingP50.toFixed(1)}px, ${Math.round(closeFrac * 100)}% of samples too close.`,
+      detail: `Typical gap ${spacingP50.toFixed(1)}px (${period ? (spacingP50 / period).toFixed(2) : "0"}× the print), ${Math.round(closeFrac * 100)}% of samples too close.`,
     },
   ];
 }

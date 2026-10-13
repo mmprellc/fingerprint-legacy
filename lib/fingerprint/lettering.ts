@@ -10,18 +10,20 @@ export const RIDGE_WIDTH_RATIO = 0.42;
  */
 export const UNDERSTROKE = 0;
 
-/** Libre Baskerville Bold cap height, as a fraction of the em. */
-const CAP_EM = 0.77;
+/** Cormorant Garamond Regular cap height, the default ridge face, as a fraction of the em. */
+const CAP_EM = 0.625;
+
+/** Cap height as a fraction of the print's own ridge spacing. The lines are drawn farther apart than this. */
+export const CAP_RATIO = 0.5;
 
 export function ridgeWidth(period: number) {
   return Math.max(2.4, period * RIDGE_WIDTH_RATIO);
 }
 
-export function fontSizeFor(period: number, textScale = 1) {
-  // Cap height stays inside 60–70% of the measured ridge spacing so neighboring
-  // lines of type cannot meet.
-  const cap = Math.max(6.5, period * 0.64);
-  return (cap / CAP_EM) * (textScale || 1);
+export function fontSizeFor(period: number, textScale = 1, capEm = CAP_EM) {
+  // One small size. The open gap between lines, not a larger cap, keeps the neighbors apart.
+  const cap = Math.max(6.5, period * CAP_RATIO);
+  return (cap / (capEm || CAP_EM)) * (textScale || 1);
 }
 
 export function wordsOf(lines: string[]) {
@@ -40,8 +42,8 @@ function verseWords(verse: string) {
  * Names stay whole. Each scripture is one phrase, from the opening quote through
  * the reference, and may continue on the next ridge segments in this same order.
  * A name never lands in the middle of a verse, and a verse never starts mid-phrase.
- * Names sit between whole verses, or on their own ridges, with a divider between them.
- * They take turns. A short ridge uses the next name that is not already ahead, or a divider.
+ * Names sit between whole verses, or on their own ridges. A ridge too short for a
+ * whole name or the next words of a verse stays blank. Nothing is filled with dots.
  */
 export function packBodyRuns(
   runs: Pt[][],
@@ -81,10 +83,7 @@ export function packBodyRuns(
       let used = runIndex === start ? used0 : 2;
       let count = runIndex === start ? count0 : 0;
       if (runIndex === start && count > 0) {
-        const need = gap + measure(RIDGE_DIVIDER, runIndex);
-        if (need > length - used - 1.5) return false;
-        used += need;
-        count += 1;
+        // The verse follows whatever is already on the run, with a word space.
       }
       let placed = 0;
       while (wi < words.length) {
@@ -105,9 +104,9 @@ export function packBodyRuns(
   const sampleGap = gapFor(0);
   const widthOf = (words: string[]) => words.reduce((sum, word, index) => sum + (index ? sampleGap : 0) + measure(word, 0), 0);
   const totalLen = runs.reduce((sum, run) => sum + pathLength(run), 0);
-  const cycleLen = versesAt.reduce((sum, words) => sum + widthOf(words) + sampleGap + measure(RIDGE_DIVIDER, 0), 0);
+  const cycleLen = versesAt.reduce((sum, words) => sum + widthOf(words) + sampleGap, 0);
   const nameUnit = names.length
-    ? names.reduce((sum, name) => sum + measure(name, 0) + sampleGap + measure(RIDGE_DIVIDER, 0), 0) / names.length
+    ? names.reduce((sum, name) => sum + measure(name, 0) + sampleGap, 0) / names.length
     : 1;
   const allNamesLen = names.reduce((sum, name) => sum + measure(name, 0) + sampleGap, 0);
   const safeCycle = Math.max(cycleLen, 1);
@@ -174,7 +173,6 @@ export function packBodyRuns(
     };
 
     const startVerse = (words: string[]) => {
-      if (parts.length && !place(RIDGE_DIVIDER)) return "stop" as const;
       let placed = 0;
       while (verseWord < words.length && place(words[verseWord])) {
         verseWord += 1;
@@ -235,9 +233,8 @@ export function packBodyRuns(
       }
 
       const take = (idx: number) => {
-        const tokens = parts.length ? [RIDGE_DIVIDER, names[idx]] : [names[idx]];
-        if (!tokensFit(tokens)) return false;
-        for (const token of tokens) place(token);
+        if (!tokensFit([names[idx]])) return false;
+        place(names[idx]);
         slotCount[idx] += 1;
         namesSinceVerse += 1;
         if (idx === nameCursor.i % names.length) nameCursor.i += 1;
@@ -261,14 +258,6 @@ export function packBodyRuns(
         if (startVerse(words) === "more") continue;
       }
       break;
-    }
-    // No fair name fits this segment, and the verse does not own it. A divider fills it
-    // so one short name is not stamped on every small ridge.
-    if (!parts.length && verseWord === 0) {
-      let dots = 0;
-      while (dots++ < 40 && place(RIDGE_DIVIDER)) {
-        /* keep the short ridge from going blank */
-      }
     }
     packed.push({ points, text: parts.join(" ") });
   }
@@ -639,9 +628,11 @@ export function planPortrait(
   });
 
   const source = bodySources(style.names, style.scriptures, lines);
-  const ceiling = slots.reduce((max, slot) => Math.max(max, pathLength(slot.points)), 0);
+  // A short arc cannot hold a name or a readable run of a verse. Leave it off the page.
+  const bodySlots = slots.filter((slot) => pathLength(slot.points) >= period * 5.5);
+  const ceiling = bodySlots.reduce((max, slot) => Math.max(max, pathLength(slot.points)), 0);
   const packed = packBodyRuns(
-    slots.map((slot) => slot.points),
+    bodySlots.map((slot) => slot.points),
     source.names,
     source.verses,
     (word) => measure(word, "body"),
@@ -652,7 +643,7 @@ export function planPortrait(
   );
   packed.forEach((run, index) => {
     if (!run.text) return;
-    plans[slots[index].ridge].push({ points: run.points, text: run.text, role: "body" });
+    plans[bodySlots[index].ridge].push({ points: run.points, text: run.text, role: "body" });
   });
   return plans;
 }

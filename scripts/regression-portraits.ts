@@ -10,11 +10,11 @@ import { randyCzyzStyle } from "../lib/pieces";
 import type { PrintStyle } from "../lib/fingerprint/types";
 
 const sourcePath = path.join(process.cwd(), "public/pieces/randy-source.jpg");
-const outDir = "/opt/cursor/artifacts/regression";
+const outDir = "/tmp/fp-regression";
 
 const shortStyle: PrintStyle = {
-  font: "baskerville",
-  preset: "charcoal",
+  font: "cormorant",
+  preset: "ink",
   textScale: 1,
   title: "",
   script: "",
@@ -147,6 +147,14 @@ async function main() {
   const caseCheck = shouted.find((check) => check.id === "source-case");
   if (caseCheck?.passed || !caseCheck?.detail.includes("you")) {
     throw new Error(caseCheck?.detail || "The case check did not catch YOU");
+  }
+  const dotted = auditLayout(
+    `<svg><text class="ridge ridge-body" font-size="12"><textPath>·</textPath></text></svg>`,
+    shortStyle,
+    12,
+  );
+  if (dotted.find((check) => check.id === "no-fillers")?.passed) {
+    throw new Error("The filler check did not catch a divider");
   }
 
   const randy = fs.readFileSync(sourcePath);

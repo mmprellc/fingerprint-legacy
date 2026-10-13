@@ -81,8 +81,8 @@ function sanitizeStyle(style: PrintStyle | undefined): PrintStyle {
   const names = cleanList(style?.names, 80, 80);
   const scriptures = cleanList(style?.scriptures, 12, 500);
   return {
-    font: style?.font === "cormorant" ? "cormorant" : "baskerville",
-    preset: String(style?.preset || "charcoal").slice(0, 40),
+    font: style?.font === "baskerville" ? "baskerville" : "cormorant",
+    preset: String(style?.preset || "ink").slice(0, 40),
     textScale: Math.min(1.4, Math.max(0.7, Number(style?.textScale) || 1)),
     title: String(style?.title || "").slice(0, 120),
     script: String(style?.script || "").slice(0, 120),

@@ -147,22 +147,56 @@ async function main() {
   const faded = await sharp(pixels, { raw: { width: fadedRaw.info.width, height: fadedRaw.info.height, channels: 4 } }).png().toBuffer();
   await sharp(photo).composite([{ input: faded, blend: "over" }]).png().toFile(path.join(out, "randy-czyz-overlay.png"));
 
+  const referencePath = path.join(process.cwd(), "public/pieces/gods-fingerprint-reference.jpg");
+  const refHeight = Math.min(full.height, 1600);
+  const reference = await sharp(referencePath).resize({ height: refHeight, fit: "inside", background: "#FFFFFF" }).png().toBuffer();
+  const referenceMeta = await sharp(reference).metadata();
+  const portrait = await sharp(full.png).resize({ height: refHeight, fit: "inside", background: "#FFFFFF" }).png().toBuffer();
+  const portraitMeta = await sharp(portrait).metadata();
+  const refW = referenceMeta.width || 1;
+  const artW = portraitMeta.width || 1;
+  const refGap = 48;
+  const refLabel = 56;
+  const refBoardW = refW + artW + refGap * 3;
+  const refBoardH = refHeight + refLabel + refGap;
+  const referenceBoard = `<svg xmlns="http://www.w3.org/2000/svg" width="${refBoardW}" height="${refBoardH}">
+    <rect width="100%" height="100%" fill="#FFFFFF"/>
+    <text x="${refGap}" y="36" font-family="Georgia" font-size="22" fill="#111111">God's Fingerprint</text>
+    <text x="${refW + refGap * 2}" y="36" font-family="Georgia" font-size="22" fill="#111111">Randy Czyz</text>
+  </svg>`;
+  await sharp(Buffer.from(referenceBoard))
+    .composite([
+      { input: reference, left: refGap, top: refLabel },
+      { input: portrait, left: refW + refGap * 2, top: refLabel },
+    ])
+    .png()
+    .toFile(path.join(out, "randy-czyz-vs-reference.png"));
+
   const artifacts = "/opt/cursor/artifacts";
-  fs.mkdirSync(artifacts, { recursive: true });
-  fs.copyFileSync(path.join(out, "randy-czyz.png"), path.join(artifacts, "randy_czyz_words_artwork.png"));
-  fs.copyFileSync(path.join(out, "randy-czyz-closeup.png"), path.join(artifacts, "randy_czyz_words_closeup.png"));
-  fs.copyFileSync(path.join(out, "randy-czyz-compare.png"), path.join(artifacts, "randy_czyz_words_side_by_side.png"));
-  fs.copyFileSync(path.join(out, "randy-czyz-overlay.png"), path.join(artifacts, "randy_czyz_words_overlay.png"));
-  fs.copyFileSync(path.join(out, "randy-czyz.pdf"), path.join(artifacts, "randy_czyz_words.pdf"));
+  const copies: [string, string][] = [
+    ["randy-czyz.png", "randy_czyz_words_artwork.png"],
+    ["randy-czyz-closeup.png", "randy_czyz_words_closeup.png"],
+    ["randy-czyz-compare.png", "randy_czyz_words_side_by_side.png"],
+    ["randy-czyz-overlay.png", "randy_czyz_words_overlay.png"],
+    ["randy-czyz.pdf", "randy_czyz_words.pdf"],
+    ["randy-czyz-vs-reference.png", "randy_czyz_vs_reference.png"],
+    ["gods-fingerprint-reference.jpg", "gods_fingerprint_reference.jpg"],
+  ];
+  try {
+    fs.mkdirSync(artifacts, { recursive: true });
+    for (const [from, to] of copies) fs.copyFileSync(path.join(out, from), path.join(artifacts, to));
+  } catch (error) {
+    console.log(`artifact copy skipped: ${error instanceof Error ? error.message : "unavailable"}`);
+  }
   console.log(`artwork ${full.width}x${full.height} core ${core.x.toFixed(0)},${core.y.toFixed(0)} crop ${left},${top} ${cropW}x${cropH}`);
 
   const cover = stats.hit / Math.max(1, stats.ink);
   const inkSpan = Math.max(1, stats.inkMaxY - stats.inkMinY);
   const ridgeSpan = stats.ridgeMaxY - stats.ridgeMinY;
-  if (cover < 0.82) throw new Error("Text ridges do not cover the ink oval");
+  if (cover < 0.9) throw new Error("Text ridges do not span the ink oval");
   if (ridgeSpan < inkSpan * 0.9) throw new Error("Ridges do not reach the top and bottom of the print");
-  if (stats.spacingP50 < result.period * 0.75 || stats.spacingP50 > result.period * 1.45) {
-    throw new Error(`Ridge spacing ${stats.spacingP50.toFixed(2)} is off the measured period ${result.period.toFixed(2)}`);
+  if (stats.spacingP50 < result.period * 2.15 || stats.spacingP50 > result.period * 3.6) {
+    throw new Error(`Ridge spacing ${stats.spacingP50.toFixed(2)} is off the open gap for period ${result.period.toFixed(2)}`);
   }
   if (stats.closeFrac > 0.3) throw new Error("Too many ridge samples sit on top of a neighbor");
 }
@@ -210,8 +244,8 @@ function coverageStats(gray: Float32Array, w: number, h: number, ridges: Ridge[]
     const gx = Math.floor(x / cell);
     const gy = Math.floor(y / cell);
     let best = 1e9;
-    for (let dy = -3; dy <= 3; dy++) {
-      for (let dx = -3; dx <= 3; dx++) {
+    for (let dy = -8; dy <= 8; dy++) {
+      for (let dx = -8; dx <= 8; dx++) {
         const bucket = buckets.get(`${gx + dx},${gy + dy}`);
         if (!bucket) continue;
         for (const point of bucket) {
@@ -232,7 +266,7 @@ function coverageStats(gray: Float32Array, w: number, h: number, ridges: Ridge[]
       if (gray[y * w + x] >= paper - 28) continue;
       ink++;
       inkYs.push(y);
-      if (nearest(x, y) <= period * 0.65) hit++;
+      if (nearest(x, y) <= period * 1.9) hit++;
     }
   }
   inkYs.sort((a, b) => a - b);

@@ -1,5 +1,5 @@
 import { loadRidgeFace, ridgeCaseReport } from "./glyphs";
-import { edgeTypeScale, fontSizeFor, RIDGE_DIVIDER, roleScale, type RidgeRole } from "./lettering";
+import { CAP_RATIO, edgeTypeScale, fontSizeFor, RIDGE_DIVIDER, roleScale, type RidgeRole } from "./lettering";
 import { fontById } from "./preview";
 import type { PrintStyle } from "./types";
 
@@ -34,7 +34,7 @@ function phrase(name: string | undefined, detail: string | undefined) {
 
 /** Cap height in working pixels. The floor is the same one the lettering uses. */
 export function capHeight(period: number, textScale = 1) {
-  return Math.max(CAP_FLOOR, period * 0.64) * (textScale || 1);
+  return Math.max(CAP_FLOOR, period * CAP_RATIO) * (textScale || 1);
 }
 
 /**
@@ -106,6 +106,7 @@ export function auditLayout(svg: string, style: PrintStyle, period: number): Che
   checks.push(uniformSize(svg));
   checks.push(sourceCase(svg, style));
   checks.push(letterCase(style, period));
+  checks.push(noFillers(svg));
   return checks;
 }
 
@@ -221,9 +222,29 @@ function ridgeRunTexts(svg: string) {
   return texts;
 }
 
+/** Short ridges stay blank. A dot, or a ridge of only dots, is filler. */
+function noFillers(svg: string): Check {
+  const runs = ridgeRunTexts(svg);
+  const dotted = runs.filter((text) => text.split(/\s+/).some((word) => word === RIDGE_DIVIDER));
+  if (dotted.length) {
+    return {
+      id: "no-fillers",
+      label: "No filler fragments",
+      passed: false,
+      detail: `${dotted.length} ridges are filled with a divider instead of a name or a verse.`,
+    };
+  }
+  return {
+    id: "no-fillers",
+    label: "No filler fragments",
+    passed: true,
+    detail: "Short ridges are left blank. Nothing is filled with dots.",
+  };
+}
+
 function letterCase(style: PrintStyle, period: number): Check {
   const face = loadRidgeFace(fontById(style.font).file);
-  const report = ridgeCaseReport(face, fontSizeFor(period, style.textScale || 1));
+  const report = ridgeCaseReport(face, fontSizeFor(period, style.textScale || 1, fontById(style.font).capEm));
   return {
     id: "letter-case",
     label: "Distinct lowercase",
@@ -353,6 +374,6 @@ export function layoutPassed(checks: Check[]) {
 export function legibleScale(period: number, textScale: number) {
   const scale = textScale || 1;
   if (capHeight(period, scale) >= CAP_FLOOR - 0.05) return scale;
-  const base = Math.max(CAP_FLOOR, period * 0.64);
+  const base = Math.max(CAP_FLOOR, period * CAP_RATIO);
   return Math.min(1.15, CAP_FLOOR / base);
 }

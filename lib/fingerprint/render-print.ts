@@ -119,7 +119,7 @@ export async function renderArtwork(request: RenderRequest) {
     ox = (paperW - artW * fit) / 2;
     oy = topPx + (availH - artH * fit) / 2;
   }
-  const fontSize = fontSizeFor(request.period, request.style.textScale || 1) * fit;
+  const fontSize = fontSizeFor(request.period, request.style.textScale || 1, fontById(request.style.font).capEm) * fit;
   const ink = preset.ink;
   const groups: string[] = [];
   const defs: string[] = [];
@@ -127,7 +127,7 @@ export async function renderArtwork(request: RenderRequest) {
   request.prints.forEach((print) => {
     const ridges = mapPrint(print);
     const rims = rimWeights(ridges);
-    const sourceSize = fontSizeFor(request.period, request.style.textScale || 1);
+    const sourceSize = fontSizeFor(request.period, request.style.textScale || 1, fontById(request.style.font).capEm);
     const planned = planPortrait(
       ridges,
       request.style,

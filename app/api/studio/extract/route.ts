@@ -2,13 +2,13 @@ import { NextResponse } from "next/server";
 import sharp from "sharp";
 import { rgbaToGray } from "@/lib/fingerprint/engine";
 import { producePortrait } from "@/lib/fingerprint/pipeline";
-import type { PrintStyle } from "@/lib/fingerprint/types";
+import { DEFAULT_FONT, DEFAULT_PRESET, type PrintStyle } from "@/lib/fingerprint/types";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 function styleFromForm(raw: string): PrintStyle {
-  const fallback: PrintStyle = { font: "baskerville", preset: "charcoal", textScale: 1, title: "", script: "" };
+  const fallback: PrintStyle = { font: DEFAULT_FONT, preset: DEFAULT_PRESET, textScale: 1, title: "", script: "" };
   if (!raw) return fallback;
   try {
     const parsed = JSON.parse(raw) as Partial<PrintStyle>;
@@ -16,7 +16,7 @@ function styleFromForm(raw: string): PrintStyle {
     const text = (value: unknown) => (typeof value === "string" ? value : "");
     return {
       ...fallback,
-      font: parsed.font === "cormorant" ? "cormorant" : "baskerville",
+      font: parsed.font === "baskerville" ? "baskerville" : DEFAULT_FONT,
       preset: text(parsed.preset) || fallback.preset,
       textScale: typeof parsed.textScale === "number" && Number.isFinite(parsed.textScale) ? parsed.textScale : 1,
       title: text(parsed.title),

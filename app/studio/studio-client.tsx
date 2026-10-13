@@ -42,8 +42,8 @@ export function StudioClient({
   const [prints, setPrints] = useState<Draft[]>([]);
   const [style, setStyle] = useState<PrintStyle>(
     initialPiece?.style ?? {
-      font: "baskerville",
-      preset: "charcoal",
+      font: "cormorant",
+      preset: "ink",
       textScale: 1,
       title: initialOccasion?.honoree ?? "",
       script: initialOccasion ? "" : "Always with you.",
@@ -432,7 +432,7 @@ export function StudioClient({
           <span>Scriptures, one verse per line</span>
           <textarea className="verses" value={(style.scriptures ?? []).join("\n")} onChange={(event) => setStyle({ ...style, scriptures: event.target.value.split("\n") })} />
         </label>
-        <p className="note">Every ridge is text, in one size. The two dedications follow the innermost ridges, same size as the names and a little darker. Names stay whole, and each verse runs as one phrase, continuing onto the next ridge when it needs the room.</p>
+        <p className="note">Every ridge is text, in one small size, with open space between the lines. Verses run whole along the ridges and end with their reference. Names stay whole. The two dedications follow the innermost ridges in that same size. Short ridges are left blank.</p>
         <label className="field"><span>Line under the portrait</span><input type="text" value={style.footer ?? ""} onChange={(event) => setStyle({ ...style, footer: event.target.value })} /></label>
         <label className="field"><span>Script line, if the footer is empty</span><input type="text" value={style.script} onChange={(event) => setStyle({ ...style, script: event.target.value })} /></label>
         <details open={linesOpen} onToggle={(event) => setLinesOpen(event.currentTarget.open)}>

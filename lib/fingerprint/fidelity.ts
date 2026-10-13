@@ -6,10 +6,11 @@ import type { ExtractResult, PrintStyle, Pt } from "./types";
 
 /**
  * A silhouette pixel counts as covered when a line of text passes within this
- * many ridge-periods. That is wide enough for a normal valley and the rim,
- * and far too narrow to hide an empty half of the oval.
+ * many of the print's own ridge-periods. The drawn lines are spaced wider than
+ * the ink on purpose, so the reach covers the white gap between them and still
+ * leaves an empty half of the oval uncovered.
  */
-const COVER_REACH = 1.25;
+const COVER_REACH = 2.45;
 const COVER_MIN = 0.95;
 const IOU_MIN = 0.9;
 const FLOW_MIN = 0.72;
@@ -77,7 +78,7 @@ function textSpans(result: ExtractResult, style: PrintStyle) {
   const period = result.period;
   const font = fontById(style.font);
   const ratio = Math.max(font.charRatio, 0.62);
-  const fontSize = fontSizeFor(period, style.textScale || 1);
+  const fontSize = fontSizeFor(period, style.textScale || 1, font.capEm);
   const planned = planPortrait(
     ridges,
     style,
@@ -319,7 +320,7 @@ export function auditFidelity(result: ExtractResult, style: PrintStyle): Check[]
       id: "coverage",
       label: "Coverage of the silhouette",
       passed: score.coverage >= COVER_MIN,
-      detail: `${pct(score.coverage)} of the ink silhouette has text within a ridge spacing. Target ${pct(COVER_MIN)}.`,
+      detail: `${pct(score.coverage)} of the ink silhouette is within reach of a line of text. Target ${pct(COVER_MIN)}.`,
     },
     {
       id: "shape",
