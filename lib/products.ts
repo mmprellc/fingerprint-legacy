@@ -61,13 +61,14 @@ export const products: Product[] = [
     fulfillment: "printful",
     category: "framed",
     printfulEnv: "PRINTFUL_VARIANT_FRAMED",
-    summary: "The same portrait, framed and shipped directly to the door.",
+    summary: "The same portrait, in a black, white, or natural wood frame, shipped to the door.",
     details: [
-      "A gold rule is drawn into the file so the portrait is ready for a frame",
-      "Printful prints, frames, and ships after payment",
-      "Choose 11×14 or 16×20 inches",
+      "Printful’s Enhanced Matte Paper Framed Poster, in black, white, or red oak",
+      "The studio shows the piece in the frame before you pay",
+      "Choose 8×10, 11×14, or 16×20 inches",
     ],
     sizes: [
+      { id: "8x10", label: "8 × 10 in", inches: [8, 10] },
       { id: "11x14", label: "11 × 14 in", inches: [11, 14] },
       { id: "16x20", label: "16 × 20 in", inches: [16, 20] },
     ],

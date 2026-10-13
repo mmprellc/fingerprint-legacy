@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { FramedExamples } from "@/components/FramedExamples";
 import { galleryBySlug, galleryPieces, occasionBySlug } from "@/lib/content";
 
 export function generateStaticParams() {
@@ -59,6 +60,13 @@ export default async function GalleryPiecePage({ params }: { params: Promise<{ s
           <p><Link href="/gallery">Back to the gallery</Link></p>
         </div>
       </div>
+      {piece.slug === "randy-czyz" ? (
+        <section className="band">
+          <p className="kicker">Framed</p>
+          <h2>The same piece, in the moulding.</h2>
+          <FramedExamples src="/pieces/randy-czyz.png" title="Randy Czyz" />
+        </section>
+      ) : null}
     </article>
   );
 }

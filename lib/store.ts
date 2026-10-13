@@ -33,6 +33,7 @@ export type Order = {
   checkout: "mock" | "stripe";
   stripeSessionId?: string;
   designId: string;
+  frameId?: string;
   shipping?: Shipping;
   printful?: { mode: "mock" | "live"; id?: string; status?: string; error?: string };
   emailDelivery?: { mode: "mock" | "resend"; to: string; subject: string; body: string; at: string };
@@ -48,6 +49,7 @@ export type Design = {
   period: number;
   productId: string;
   sizeId: string;
+  frameId?: string;
 };
 
 function usingPostgres() {

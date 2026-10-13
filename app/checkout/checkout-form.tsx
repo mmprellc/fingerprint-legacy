@@ -1,6 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { FrameMockup } from "@/components/FrameMockup";
+import { frameFinishes, isFrameFinish, isFrameSize, type FrameFinish } from "@/lib/frames";
 
 type ProductChoice = {
   id: string;
@@ -14,21 +16,39 @@ export function CheckoutForm({
   designId,
   productId,
   sizeId,
+  frameId,
+  imageUrl,
   products,
   mock,
 }: {
   designId: string;
   productId: string;
   sizeId: string;
+  frameId: string;
+  imageUrl: string;
   products: ProductChoice[];
   mock: boolean;
 }) {
   const [product, setProduct] = useState(productId);
   const chosen = useMemo(() => products.find((item) => item.id === product) ?? products[0], [product, products]);
   const [size, setSize] = useState(chosen.sizes.some((item) => item.id === sizeId) ? sizeId : chosen.sizes[0].id);
+  const [frame, setFrame] = useState<FrameFinish>(isFrameFinish(frameId) ? frameId : "black");
+  const framed = chosen.id === "framed";
+  const frameSize = isFrameSize(size) ? size : "11x14";
   return (
-    <form className="form-card" action="/api/checkout" method="post">
+    <form className="form-card checkout-layout" action="/api/checkout" method="post">
+      <div className="checkout-art">
+        {framed ? (
+          <FrameMockup finish={frame} size={frameSize} label="Your portrait in the selected frame">
+            <img src={imageUrl} alt="" />
+          </FrameMockup>
+        ) : (
+          <img src={imageUrl} alt="Preview of the portrait about to be ordered" />
+        )}
+      </div>
+      <div className="checkout-fields">
       <input type="hidden" name="designId" value={designId} />
+      {framed ? <input type="hidden" name="frameId" value={frame} /> : null}
       <p className="note">{mock ? "Test checkout. No card is charged, and a printed order is recorded as a mock Printful job." : "You will continue to Stripe’s secure payment page."}</p>
       <label className="field">
         <span>Email</span>
@@ -46,7 +66,8 @@ export function CheckoutForm({
                 checked={product === item.id}
                 onChange={() => {
                   setProduct(item.id);
-                  setSize(item.sizes[0].id);
+                  const preferred = item.id === "framed" && item.sizes.some((size) => size.id === "11x14") ? "11x14" : item.sizes[0].id;
+                  setSize(preferred);
                 }}
               />
               <span>{item.name} · {item.price}</span>
@@ -60,6 +81,19 @@ export function CheckoutForm({
           {chosen.sizes.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
         </select>
       </label>
+      {framed ? (
+        <fieldset>
+          <legend>Frame</legend>
+          <div className="choice-row">
+            {frameFinishes.map((item) => (
+              <label key={item.id}>
+                <input type="radio" name="frameChoice" checked={frame === item.id} onChange={() => setFrame(item.id)} />
+                <span>{item.label}</span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
+      ) : null}
       {chosen.fulfillment === "printful" && mock ? (
         <>
           <h2>Ship to</h2>
@@ -82,6 +116,7 @@ export function CheckoutForm({
       ) : null}
       <button className="btn-gold" type="submit">{mock ? "Continue to test payment" : "Continue to secure payment"}</button>
       <p><a href={`/studio`}>Return to the studio</a></p>
+      </div>
     </form>
   );
 }

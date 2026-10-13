@@ -52,7 +52,7 @@ Development with nothing set still uses `data/` on disk and the password `dev-le
 | `PRINTFUL_API_KEY` | Printful private token. Production does not invent a mock shipment when this is empty. |
 | `PRINTFUL_STORE_ID` | Required with a live token. Sent as `X-PF-Store-Id`. |
 | `PRINTFUL_VARIANT_ARCHIVAL` | Catalog variant id for the archival print. |
-| `PRINTFUL_VARIANT_FRAMED` | Catalog variant id for the framed print. |
+| `PRINTFUL_VARIANT_FRAME_<FINISH>_<SIZE>` | Optional. Overrides the built-in framed-poster variant for that finish and size. |
 | `PUBLIC_BASE_URL` | Canonical origin, no trailing slash. Email links use it. Printful uses a signed file URL when Blob or S3 is set, and this origin otherwise. |
 | `RESEND_API_KEY` and `EMAIL_FROM` | Optional. Without them, the email is stored on the order and the download is on the confirmation page. |
 | `DASHBOARD_PASSWORD` | Required in production and on Vercel. No default there. |
@@ -71,14 +71,14 @@ The live endpoint is `https://YOUR_DOMAIN/api/webhooks/stripe`. Subscribe to `ch
 ## What a purchase does
 
 - **Digital keepsake** — SVG (glyph outlines, so the shop does not need the font), PDF, and PNG.
-- **Archival print / framed print** — the same files, plus a Printful order (or a mock) using the shipping address.
+- **Archival print / framed print** — the same files, plus a Printful order (or a mock) using the shipping address. A framed print is Printful’s Enhanced Matte Paper Framed Poster in black, white, or red oak, at 8×10, 11×14, or 16×20. The studio, the pricing page, and checkout show the live artwork inside that frame. With `PRINTFUL_API_KEY` and a public https file (a signed Blob or S3 URL of the portrait), `POST /mockup-generator/create-task/2` replaces the drawing with Printful’s photograph. Without a key, or while the file is only on local disk, the frame stays the local moulding.
 - Jewelry, urns, and custom keepsakes are in the catalog and on the site, and are not charged until a variant is connected.
 
 ## Go live on Vercel
 
 Orders live in Postgres. Generated previews and print files live in Vercel Blob or S3. `data/` is only the development fallback.
 
-1. Create a [Vercel](https://vercel.com) project from this repo. The plan has to allow a 60 second function: portrait extraction on the regression set takes about 5–14 seconds, and fulfillment renders the SVG, PNG, and PDF after that. The Hobby plan’s 10 second cap will time out. `vercel.json` sets `maxDuration` to 60 on the extract, design, webhook, and mock-complete routes. If the deploy is rejected for that limit, use the Railway or Render steps below.
+1. Create a [Vercel](https://vercel.com) project from this repo. The plan has to allow a 60 second function: portrait extraction on the regression set takes about 5–14 seconds, and fulfillment renders the SVG, PNG, and PDF after that. The Hobby plan’s 10 second cap will time out. `vercel.json` sets `maxDuration` to 60 on the extract, design, frame-mockup, webhook, and mock-complete routes. If the deploy is rejected for that limit, use the Railway or Render steps below.
 2. Create a Postgres database. Either Neon ([neon.tech](https://neon.tech) → New project → Connect → pooled connection string) or Vercel → Storage → Postgres (Neon). Put the pooled string in `DATABASE_URL`. The host should contain `-pooler`. If the string includes `channel_binding`, the app strips it.
 3. Create object storage. Vercel → Storage → Blob → connect the project, which sets `BLOB_READ_WRITE_TOKEN`. Or create an S3 bucket (or Cloudflare R2) and set `S3_BUCKET`, `S3_ACCESS_KEY_ID`, and `S3_SECRET_ACCESS_KEY`. Files are private. Downloads redirect to a short-lived signed URL so a large PNG is not squeezed through the 4.5 MB function response limit. The studio also shrinks an upload’s long edge toward 1600 pixels before the request, which is the same size the extractor already uses, so a phone photo stays under the 4.5 MB request limit.
 4. Stripe, in live mode, with [an authenticator app or a passkey](https://docs.stripe.com/security) on the Dashboard rather than SMS.
@@ -86,7 +86,7 @@ Orders live in Postgres. Generated previews and print files live in Vercel Blob 
    - On the same page, copy the publishable key into `STRIPE_PUBLISHABLE_KEY` (`pk_live_…`).
    - Developers → Webhooks → Add endpoint. URL: `https://YOUR_DOMAIN/api/webhooks/stripe`. Events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`. Reveal the signing secret into `STRIPE_WEBHOOK_SECRET`.
    - Mark the sensitive variables write-only in Vercel.
-5. Printful ([printful.com](https://printful.com)). Settings → API → private token → `PRINTFUL_API_KEY`. The store id is in the dashboard URL or under Stores → `PRINTFUL_STORE_ID`. Pick the poster variant and the framed-poster variant in the catalog and set `PRINTFUL_VARIANT_ARCHIVAL` and `PRINTFUL_VARIANT_FRAMED`. Printful fetches a signed URL of the PNG. `PUBLIC_BASE_URL` is the fallback when the file is still on local disk.
+5. Printful ([printful.com](https://printful.com)). Settings → API → private token → `PRINTFUL_API_KEY`. The store id is in the dashboard URL or under Stores → `PRINTFUL_STORE_ID`. Set `PRINTFUL_VARIANT_ARCHIVAL` to the unframed poster variant. Framed orders use Enhanced Matte Paper Framed Poster (product 2): black, white, and red oak at 8×10, 11×14, and 16×20. Override one cell with `PRINTFUL_VARIANT_FRAME_<FINISH>_<SIZE>` only if the catalog id changes. Printful fetches a signed URL of the PNG. `PUBLIC_BASE_URL` is the fallback when the file is still on local disk. The same key photographs the frame in the studio when the portrait file is a public https URL.
 6. Set `DASHBOARD_PASSWORD` to a long password and `APP_SECRET` to the output of `openssl rand -hex 32`. Set `PUBLIC_BASE_URL` to the canonical `https://` origin with no trailing slash.
 7. Redeploy, then run `npm run production-check -- --production` with those variables loaded. Open `/dashboard/login` and confirm the page does not show `dev-legacy`.
 

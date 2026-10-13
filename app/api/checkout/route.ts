@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isFrameFinish } from "@/lib/frames";
 import { paymentsMode } from "@/lib/fulfill";
 import { productById } from "@/lib/products";
 import { publicOrigin } from "@/lib/runtime";
@@ -35,6 +36,7 @@ export async function POST(request: Request) {
     return NextResponse.redirect(new URL(`/checkout?design=${designId}&error=address`, requestOrigin), 303);
   }
 
+  const frameId = isFrameFinish(String(form.get("frameId") || "")) ? String(form.get("frameId")) : design.frameId;
   const order = await createOrder({
     email,
     productId: product.id,
@@ -42,6 +44,7 @@ export async function POST(request: Request) {
     amountCents: product.priceCents,
     checkout: paymentsMode(),
     designId,
+    ...(product.id === "framed" && isFrameFinish(frameId) ? { frameId } : {}),
     shipping: product.fulfillment === "printful" ? shipping : undefined,
   });
 

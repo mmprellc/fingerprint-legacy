@@ -24,7 +24,7 @@ function main() {
     { name: "PRINTFUL_API_KEY", ok: present("PRINTFUL_API_KEY"), detail: present("PRINTFUL_API_KEY") ? "live" : "prints stay unsent" },
     { name: "PRINTFUL_STORE_ID", ok: present("PRINTFUL_STORE_ID"), detail: present("PRINTFUL_STORE_ID") ? "set" : "missing" },
     { name: "PRINTFUL_VARIANT_ARCHIVAL", ok: present("PRINTFUL_VARIANT_ARCHIVAL"), detail: present("PRINTFUL_VARIANT_ARCHIVAL") ? "set" : "missing" },
-    { name: "PRINTFUL_VARIANT_FRAMED", ok: present("PRINTFUL_VARIANT_FRAMED"), detail: present("PRINTFUL_VARIANT_FRAMED") ? "set" : "missing" },
+    { name: "framed poster variants", ok: true, detail: "black, white, and red oak at 8×10, 11×14, and 16×20, from Printful product 2. Override with PRINTFUL_VARIANT_FRAME_<FINISH>_<SIZE>" },
     {
       name: "DASHBOARD_PASSWORD",
       ok: present("DASHBOARD_PASSWORD"),

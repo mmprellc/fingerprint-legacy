@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { buildPreviewSvg, mapPrint } from "@/lib/fingerprint/preview";
 import { INK_PRESETS, type PrintStyle, type Ridge, type RidgeFontId } from "@/lib/fingerprint/types";
 import type { StudioPiece } from "@/lib/pieces";
+import { FrameMockup } from "@/components/FrameMockup";
+import { frameFinishes, isFrameSize, type FrameFinish } from "@/lib/frames";
 import { formatMoney, buyableProducts, productById } from "@/lib/products";
 import type { Occasion } from "@/lib/content";
 
@@ -68,6 +70,7 @@ export function StudioClient({
   initialOccasion,
   initialPiece,
   initialProduct,
+  initialFrame,
   autoload,
   couple,
   occasions,
@@ -75,6 +78,7 @@ export function StudioClient({
   initialOccasion?: Occasion;
   initialPiece?: StudioPiece;
   initialProduct: string;
+  initialFrame: FrameFinish;
   autoload: boolean;
   couple: boolean;
   occasions: Occasion[];
@@ -91,7 +95,9 @@ export function StudioClient({
     },
   );
   const [productId, setProductId] = useState(initialProduct);
-  const [sizeId, setSizeId] = useState(productById(initialProduct).sizes[0].id);
+  const [sizeId, setSizeId] = useState(initialProduct === "framed" ? "11x14" : productById(initialProduct).sizes[0].id);
+  const [frameId, setFrameId] = useState<FrameFinish>(initialFrame);
+  const [printfulUrl, setPrintfulUrl] = useState("");
   const [view, setView] = useState<"words" | "lines" | "overlay" | "side">("words");
   const [zoom, setZoom] = useState(1);
   const [tone, setTone] = useState<"auto" | "dark" | "light">("auto");
@@ -338,6 +344,7 @@ export function StudioClient({
           period,
           productId,
           sizeId,
+          ...(framed ? { frameId } : {}),
         }),
       });
       const payload = await response.json();
@@ -348,6 +355,27 @@ export function StudioClient({
       setBusy(false);
     }
   }
+
+  const framed = productId === "framed";
+  const frameSize = isFrameSize(sizeId) ? sizeId : "11x14";
+
+  useEffect(() => {
+    if (!framed || !svg) {
+      setPrintfulUrl("");
+      return;
+    }
+    const handle = window.setTimeout(() => {
+      void fetch("/api/frames/mockup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ svg, finish: frameId, size: frameSize }),
+      })
+        .then((response) => response.json())
+        .then((payload: { mockupUrl?: string }) => setPrintfulUrl(payload.mockupUrl || ""))
+        .catch(() => setPrintfulUrl(""));
+    }, 800);
+    return () => window.clearTimeout(handle);
+  }, [framed, svg, frameId, frameSize]);
 
   const ready = prints.some((print) => print.ridges.length > 8) && (
     hasList(style.names) || hasList(style.scriptures) || Boolean(style.centerName?.trim()) || prints.some((print) => print.lines.some((line) => line.trim()))
@@ -380,7 +408,13 @@ export function StudioClient({
             ))}
             <figure>
               <figcaption>Word-filled ridges</figcaption>
-              <div className={`svg-hold ${fontClass}`} style={{ background: preset.paper }} dangerouslySetInnerHTML={{ __html: svg }} />
+              {framed ? (
+                <FrameMockup finish={frameId} size={frameSize}>
+                  <div className={`svg-hold ${fontClass}`} style={{ background: preset.paper }} dangerouslySetInnerHTML={{ __html: svg }} />
+                </FrameMockup>
+              ) : (
+                <div className={`svg-hold ${fontClass}`} style={{ background: preset.paper }} dangerouslySetInnerHTML={{ __html: svg }} />
+              )}
             </figure>
           </div>
         ) : (
@@ -391,13 +425,19 @@ export function StudioClient({
                   <img src={prints[0].src} alt="Original fingerprint under the portrait" />
                   <div className={`svg-hold ${fontClass}`} dangerouslySetInnerHTML={{ __html: svg }} />
                 </div>
+              ) : framed && printfulUrl && view === "words" ? (
+                <img className="frame-photo" src={printfulUrl} alt="The portrait photographed in the selected Printful frame" />
+              ) : framed ? (
+                <FrameMockup finish={frameId} size={frameSize} label={`${frameFinishes.find((item) => item.id === frameId)?.label} frame`}>
+                  <div className={`svg-hold ${fontClass}`} style={{ background: preset.paper }} dangerouslySetInnerHTML={{ __html: svg }} />
+                </FrameMockup>
               ) : (
-                <div className={`svg-hold ${fontClass}`} style={{ background: view === "lines" ? preset.paper : preset.paper }} dangerouslySetInnerHTML={{ __html: svg }} />
+                <div className={`svg-hold ${fontClass}`} style={{ background: preset.paper }} dangerouslySetInnerHTML={{ __html: svg }} />
               )}
             </div>
           </div>
         )}
-        {prints[0] ? <p className="note">{prints.reduce((sum, print) => sum + print.ridges.length, 0)} ridge lines. Step closer with the zoom.</p> : null}
+        {prints[0] ? <p className="note">{prints.reduce((sum, print) => sum + print.ridges.length, 0)} ridge lines. Step closer with the zoom.{framed ? (printfulUrl ? " This photograph is from Printful." : " The frame is drawn here. Printful’s photograph replaces it when a print key and a public file are set.") : ""}</p> : null}
       </section>
 
       <aside className="controls">
@@ -520,7 +560,11 @@ export function StudioClient({
         </label>
         <label className="field">
           <span>Format</span>
-          <select value={productId} onChange={(event) => { setProductId(event.target.value); setSizeId(productById(event.target.value).sizes[0].id); }}>
+          <select value={productId} onChange={(event) => {
+            const next = event.target.value;
+            setProductId(next);
+            setSizeId(next === "framed" ? "11x14" : productById(next).sizes[0].id);
+          }}>
             {buyableProducts.map((item) => <option key={item.id} value={item.id}>{item.name} · {formatMoney(item.priceCents)}</option>)}
           </select>
         </label>
@@ -530,6 +574,15 @@ export function StudioClient({
             {product.sizes.map((size) => <option key={size.id} value={size.id}>{size.label}</option>)}
           </select>
         </label>
+        {framed ? (
+          <div className="swatches" role="radiogroup" aria-label="Frame">
+            {frameFinishes.map((finish) => (
+              <button key={finish.id} type="button" aria-pressed={frameId === finish.id} onClick={() => setFrameId(finish.id)}>
+                <i className={`swatch finish-${finish.id}`} /> {finish.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
         <label className="field">
           <span>Start from an occasion</span>
           <select
