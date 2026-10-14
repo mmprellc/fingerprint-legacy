@@ -3,6 +3,7 @@ import { occasionBySlug, occasions } from "@/lib/content";
 import { pieceBySlug } from "@/lib/pieces";
 import { isFrameFinish } from "@/lib/frames";
 import { productById } from "@/lib/products";
+import { paymentsMode } from "@/lib/fulfill";
 import { StudioClient } from "./studio-client";
 
 export const metadata: Metadata = { title: "Studio" };
@@ -31,6 +32,7 @@ export default async function StudioPage({ searchParams }: { searchParams: Promi
         autoload={autoload && !couple}
         couple={couple}
         occasions={occasions}
+        waitlist={paymentsMode() === "waitlist"}
       />
     </article>
   );

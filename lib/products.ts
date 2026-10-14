@@ -117,3 +117,23 @@ export function productById(id: string) {
 export function formatMoney(cents: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(cents / 100);
 }
+
+/** Printful catalog ids for the unframed archival poster, by size. */
+const ARCHIVAL_VARIANTS = {
+  "8x10": 4463,
+  "11x14": 14125,
+  "16x20": 3877,
+} as const;
+
+export type ArchivalSize = keyof typeof ARCHIVAL_VARIANTS;
+
+export function isArchivalSize(value: string | undefined): value is ArchivalSize {
+  return value === "8x10" || value === "11x14" || value === "16x20";
+}
+
+/** Built-in variant for the size. PRINTFUL_VARIANT_ARCHIVAL_<SIZE> overrides one cell. */
+export function archivalVariantId(size: string | undefined) {
+  const chosen: ArchivalSize = isArchivalSize(size) ? size : "11x14";
+  const override = Number(process.env[`PRINTFUL_VARIANT_ARCHIVAL_${chosen.toUpperCase()}`] || "");
+  return override || ARCHIVAL_VARIANTS[chosen];
+}

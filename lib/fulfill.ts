@@ -1,10 +1,10 @@
 import JSZip from "jszip";
 import { orderObjectKey, putBytes, signedFileUrl } from "./files";
 import { framedVariantId } from "./frames";
-import { productById } from "./products";
+import { archivalVariantId, productById } from "./products";
 import { renderArtwork } from "./fingerprint/render-print";
 import { isProductionDeploy, requiresDurableStorage } from "./runtime";
-import { secretKeyMode } from "./stripe";
+import { isPrelaunch, secretKeyMode } from "./stripe";
 import {
   getDesign,
   getOrder,
@@ -13,7 +13,8 @@ import {
   type Shipping,
 } from "./store";
 
-export function paymentsMode(): "mock" | "stripe" {
+export function paymentsMode(): "mock" | "stripe" | "waitlist" {
+  if (isPrelaunch()) return "waitlist";
   return secretKeyMode() === "unset" ? "mock" : "stripe";
 }
 
@@ -64,7 +65,7 @@ export async function fulfillOrder(orderId: string) {
     const email = await sendDownloadEmail(existing.email, existing, link);
 
     let printful: Order["printful"];
-    if (product.fulfillment === "printful") {
+    if (product.fulfillment === "printful" && !isPrelaunch()) {
       printful = await submitPrintful(existing, product.printfulEnv, size.inches);
     }
 
@@ -145,7 +146,9 @@ async function submitPrintful(order: Order, envName: "PRINTFUL_VARIANT_ARCHIVAL"
   }
   const variantId = order.productId === "framed"
     ? framedVariantId(order.frameId, order.sizeId)
-    : Number(envName ? process.env[envName] : "");
+    : order.productId === "archival"
+      ? archivalVariantId(order.sizeId)
+      : Number(envName ? process.env[envName] : "");
   if (!variantId) {
     return {
       mode: "live" as const,

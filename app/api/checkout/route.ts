@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import { isFrameFinish } from "@/lib/frames";
 import { paymentsMode } from "@/lib/fulfill";
 import { productById } from "@/lib/products";
-import { publicOrigin } from "@/lib/runtime";
-import { getDesign, createOrder, type Shipping } from "@/lib/store";
+import { HostingConfigError, publicOrigin } from "@/lib/runtime";
+import { getDesign, createOrder, joinLaunchList, type Shipping } from "@/lib/store";
 import { checkoutBlockedReason, getStripe, integrationIdentifier } from "@/lib/stripe";
 
 export const runtime = "nodejs";
@@ -13,6 +13,10 @@ export async function POST(request: Request) {
   const designId = String(form.get("designId") || "");
   const origin = publicOrigin(request);
   const requestOrigin = new URL(request.url).origin;
+  const mode = paymentsMode();
+  if (mode === "waitlist") {
+    return joinList(form, designId, requestOrigin);
+  }
   const blocked = checkoutBlockedReason();
   if (blocked) {
     console.error(blocked);
@@ -32,7 +36,7 @@ export async function POST(request: Request) {
   }
   const size = product.sizes.find((item) => item.id === String(form.get("sizeId") || "")) ?? product.sizes[0];
   const shipping = readShipping(form);
-  if (product.fulfillment === "printful" && paymentsMode() === "mock" && !shipping.address1) {
+  if (product.fulfillment === "printful" && mode === "mock" && !shipping.address1) {
     return NextResponse.redirect(new URL(`/checkout?design=${designId}&error=address`, requestOrigin), 303);
   }
 
@@ -42,7 +46,7 @@ export async function POST(request: Request) {
     productId: product.id,
     sizeId: size.id,
     amountCents: product.priceCents,
-    checkout: paymentsMode(),
+    checkout: mode,
     designId,
     ...(product.id === "framed" && isFrameFinish(frameId) ? { frameId } : {}),
     shipping: product.fulfillment === "printful" ? shipping : undefined,
@@ -96,6 +100,34 @@ export async function POST(request: Request) {
     return NextResponse.redirect(new URL(`/checkout?design=${designId}&error=stripe`, requestOrigin), 303);
   }
   return NextResponse.redirect(session.url, 303);
+}
+
+async function joinList(form: FormData, designId: string, requestOrigin: string) {
+  const back = (error: string) => NextResponse.redirect(new URL(`/checkout?design=${designId}&error=${error}`, requestOrigin), 303);
+  try {
+    const design = await getDesign(designId);
+    if (!design) return NextResponse.redirect(new URL("/studio", requestOrigin), 303);
+    const email = String(form.get("email") || "").trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 200) return back("email");
+    const product = productById(String(form.get("productId") || design.productId));
+    if (!product.available) return back("product");
+    const size = product.sizes.find((item) => item.id === String(form.get("sizeId") || "")) ?? product.sizes[0];
+    const frameId = isFrameFinish(String(form.get("frameId") || "")) ? String(form.get("frameId")) : design.frameId;
+    await joinLaunchList({
+      email,
+      designId,
+      productId: product.id,
+      sizeId: size.id,
+      ...(product.id === "framed" && isFrameFinish(frameId) ? { frameId } : {}),
+    });
+    return NextResponse.redirect(new URL(`/checkout?design=${designId}&joined=1`, requestOrigin), 303);
+  } catch (error) {
+    if (error instanceof HostingConfigError) {
+      console.error(error.message);
+      return back("storage");
+    }
+    throw error;
+  }
 }
 
 function readShipping(form: FormData): Shipping {

@@ -52,6 +52,16 @@ export type Design = {
   frameId?: string;
 };
 
+export type LaunchSignup = {
+  id: string;
+  createdAt: string;
+  email: string;
+  designId: string;
+  productId: string;
+  sizeId: string;
+  frameId?: string;
+};
+
 function usingPostgres() {
   if (databaseUrl()) return true;
   if (requiresDurableStorage()) {
@@ -124,6 +134,30 @@ export async function listOrders() {
   return readOrders();
 }
 
+export async function joinLaunchList(input: Omit<LaunchSignup, "id" | "createdAt" | "email"> & { email: string }) {
+  const signup: LaunchSignup = {
+    id: newId("lst"),
+    createdAt: new Date().toISOString(),
+    email: input.email.trim().toLowerCase(),
+    designId: input.designId,
+    productId: input.productId,
+    sizeId: input.sizeId,
+    ...(input.frameId ? { frameId: input.frameId } : {}),
+  };
+  if (usingPostgres()) return joinLaunchListPg(signup);
+  return exclusive(async () => {
+    const signups = await readLaunchList();
+    signups.unshift(signup);
+    await writeLaunchList(signups);
+    return signup;
+  });
+}
+
+export async function listLaunchSignups() {
+  if (usingPostgres()) return listLaunchSignupsPg();
+  return readLaunchList();
+}
+
 export async function findOrderBySession(sessionId: string) {
   if (!sessionId) return null;
   if (usingPostgres()) return findOrderBySessionPg(sessionId);
@@ -157,6 +191,24 @@ async function writeOrders(orders: Order[]) {
   const file = path.join(root, "orders.json");
   const tmp = `${file}.tmp`;
   await fs.writeFile(tmp, JSON.stringify(orders, null, 2));
+  await fs.rename(tmp, file);
+}
+
+async function readLaunchList(): Promise<LaunchSignup[]> {
+  try {
+    const raw = await fs.readFile(path.join(root, "launch-list.json"), "utf8");
+    const parsed = JSON.parse(raw) as LaunchSignup[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function writeLaunchList(signups: LaunchSignup[]) {
+  await fs.mkdir(root, { recursive: true });
+  const file = path.join(root, "launch-list.json");
+  const tmp = `${file}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify(signups, null, 2));
   await fs.rename(tmp, file);
 }
 
@@ -279,6 +331,13 @@ async function sql() {
         payload jsonb NOT NULL
       )`;
       await db`CREATE INDEX IF NOT EXISTS orders_session_idx ON orders (stripe_session_id)`;
+      await db`CREATE TABLE IF NOT EXISTS launch_list (
+        id text PRIMARY KEY,
+        created_at timestamptz NOT NULL,
+        email text NOT NULL,
+        payload jsonb NOT NULL
+      )`;
+      await db`CREATE INDEX IF NOT EXISTS launch_list_email_idx ON launch_list (email)`;
     })().catch((error) => {
       schemaReady = null;
       throw error;
@@ -344,6 +403,21 @@ async function listOrdersPg() {
   const db = await sql();
   const rows = await db<{ payload: Order | string }[]>`SELECT payload FROM orders ORDER BY created_at DESC`;
   return rows.map((row) => asJson<Order>(row.payload));
+}
+
+async function joinLaunchListPg(signup: LaunchSignup) {
+  const db = await sql();
+  await db`
+    INSERT INTO launch_list (id, created_at, email, payload)
+    VALUES (${signup.id}, ${signup.createdAt}, ${signup.email}, ${db.json(signup)})
+  `;
+  return signup;
+}
+
+async function listLaunchSignupsPg() {
+  const db = await sql();
+  const rows = await db<{ payload: LaunchSignup | string }[]>`SELECT payload FROM launch_list ORDER BY created_at DESC`;
+  return rows.map((row) => asJson<LaunchSignup>(row.payload));
 }
 
 async function findOrderBySessionPg(sessionId: string) {

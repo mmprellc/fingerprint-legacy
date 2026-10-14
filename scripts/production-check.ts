@@ -1,4 +1,4 @@
-import { secretKeyMode, publishableKeyMode, checkoutBlockedReason } from "../lib/stripe";
+import { secretKeyMode, publishableKeyMode, checkoutBlockedReason, isPrelaunch } from "../lib/stripe";
 import { databaseUrl, storageKind, webhookUrl, isProductionDeploy, requiresDurableStorage } from "../lib/runtime";
 import { dashboardConfigError } from "../lib/store";
 
@@ -23,7 +23,7 @@ function main() {
     { name: "PUBLIC_BASE_URL", ok: present("PUBLIC_BASE_URL"), detail: present("PUBLIC_BASE_URL") ? webhookUrl() : "webhook path /api/webhooks/stripe" },
     { name: "PRINTFUL_API_KEY", ok: present("PRINTFUL_API_KEY"), detail: present("PRINTFUL_API_KEY") ? "live" : "prints stay unsent" },
     { name: "PRINTFUL_STORE_ID", ok: present("PRINTFUL_STORE_ID"), detail: present("PRINTFUL_STORE_ID") ? "set" : "missing" },
-    { name: "PRINTFUL_VARIANT_ARCHIVAL", ok: present("PRINTFUL_VARIANT_ARCHIVAL"), detail: present("PRINTFUL_VARIANT_ARCHIVAL") ? "set" : "missing" },
+    { name: "archival poster variants", ok: true, detail: "8×10 is 4463, 11×14 is 14125, 16×20 is 3877. Override with PRINTFUL_VARIANT_ARCHIVAL_<SIZE>" },
     { name: "framed poster variants", ok: true, detail: "black, white, and red oak at 8×10, 11×14, and 16×20, from Printful product 2. Override with PRINTFUL_VARIANT_FRAME_<FINISH>_<SIZE>" },
     {
       name: "DASHBOARD_PASSWORD",
@@ -48,26 +48,38 @@ function main() {
     return;
   }
 
-  const required = [
-    "DATABASE_URL",
-    "object storage",
-    "STRIPE_SECRET_KEY",
-    "STRIPE_PUBLISHABLE_KEY",
-    "STRIPE_WEBHOOK_SECRET",
-    "PUBLIC_BASE_URL",
-    "DASHBOARD_PASSWORD",
-    "APP_SECRET",
-  ];
+  const prelaunch = secretKeyMode() === "unset";
+  const required = prelaunch
+    ? ["DATABASE_URL", "object storage", "PUBLIC_BASE_URL", "DASHBOARD_PASSWORD", "APP_SECRET"]
+    : [
+        "DATABASE_URL",
+        "object storage",
+        "STRIPE_SECRET_KEY",
+        "STRIPE_PUBLISHABLE_KEY",
+        "STRIPE_WEBHOOK_SECRET",
+        "PUBLIC_BASE_URL",
+        "DASHBOARD_PASSWORD",
+        "APP_SECRET",
+      ];
   const missing = rows.filter((row) => required.includes(row.name) && !row.ok);
   const stripeLive = secretKeyMode() === "live" && publishableKeyMode() === "live";
   const printMissing = rows.filter((row) => row.name.startsWith("PRINTFUL_") && !row.ok);
-  if (!stripeLive) console.log("block  stripe — production needs rk_live_… and pk_live_…");
-  if (printMissing.length) {
-    console.log(`note   prints will not ship until ${printMissing.map((row) => row.name).join(", ")} are set`);
+  if (prelaunch) {
+    console.log("pre-launch — STRIPE_SECRET_KEY is unset. Checkout saves an email. Printful is not called.");
+  } else if (!stripeLive) {
+    console.log("block  stripe — production needs rk_live_… and pk_live_…");
   }
-  if (missing.length || !stripeLive || blocked || dashboard) {
+  if (printMissing.length) {
+    console.log(
+      prelaunch
+        ? "note   prints stay skipped until PRINTFUL_API_KEY and PRINTFUL_STORE_ID are set"
+        : `note   prints will not ship until ${printMissing.map((row) => row.name).join(", ")} are set`,
+    );
+  }
+  if (missing.length || (!prelaunch && !stripeLive) || blocked || dashboard) {
     process.exitCode = 1;
   }
+  if (prelaunch && isPrelaunch()) console.log("mode   this process is a production deploy in pre-launch");
 }
 
 main();

@@ -2,9 +2,10 @@ import { NextResponse } from "next/server";
 import type { PreviewPrint } from "@/lib/fingerprint/preview";
 import { renderStudioPortrait } from "@/lib/fingerprint/studio-art";
 import { DEFAULT_FONT, DEFAULT_PRESET, type PrintStyle, type Ridge } from "@/lib/fingerprint/types";
+import { ensureRidgeWords } from "@/lib/studio-default";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 function sanitize(value: unknown): PreviewPrint[] {
   if (!Array.isArray(value)) return [];
@@ -52,8 +53,9 @@ export async function POST(request: Request) {
     names: Array.isArray(body?.style?.names) ? body.style.names.filter((item): item is string => typeof item === "string") : [],
     scriptures: Array.isArray(body?.style?.scriptures) ? body.style.scriptures.filter((item): item is string => typeof item === "string") : [],
   };
+  const ready = ensureRidgeWords(style);
   try {
-    const portraitPng = await renderStudioPortrait(prints, style, Number(body?.period) || 12);
+    const portraitPng = await renderStudioPortrait(prints, ready, Number(body?.period) || 12);
     return NextResponse.json({ portraitPng });
   } catch (error) {
     const message = error instanceof Error ? error.message : "The portrait could not be drawn.";

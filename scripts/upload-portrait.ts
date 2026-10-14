@@ -70,6 +70,8 @@ async function upload(file: string, style: PrintStyle, name: string) {
 }
 
 async function main() {
+  const bare: PrintStyle = { font: "cormorant", preset: "ink", textScale: 1, title: "", script: "Always with you." };
+  await upload(path.join(process.cwd(), "public/pieces/randy-source.jpg"), bare, "randy-empty-form");
   await upload(path.join(process.cwd(), "fixtures/prints/plain-whorl.jpg"), shortStyle, "plain-whorl");
   await upload(path.join(process.cwd(), "public/pieces/randy-source.jpg"), randyCzyzStyle, "randy-source");
   console.log("upload portrait ok");

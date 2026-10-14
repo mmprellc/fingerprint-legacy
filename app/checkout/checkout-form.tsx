@@ -19,7 +19,7 @@ export function CheckoutForm({
   frameId,
   imageUrl,
   products,
-  mock,
+  mode,
 }: {
   designId: string;
   productId: string;
@@ -27,7 +27,7 @@ export function CheckoutForm({
   frameId: string;
   imageUrl: string;
   products: ProductChoice[];
-  mock: boolean;
+  mode: "mock" | "stripe" | "waitlist";
 }) {
   const [product, setProduct] = useState(productId);
   const chosen = useMemo(() => products.find((item) => item.id === product) ?? products[0], [product, products]);
@@ -49,7 +49,7 @@ export function CheckoutForm({
       <div className="checkout-fields">
       <input type="hidden" name="designId" value={designId} />
       {framed ? <input type="hidden" name="frameId" value={frame} /> : null}
-      <p className="note">{mock ? "Test checkout. No card is charged, and a printed order is recorded as a mock Printful job." : "You will continue to Stripe’s secure payment page."}</p>
+      <p className="note">{mode === "waitlist" ? "Orders open soon. No card is charged." : mode === "mock" ? "Test checkout. No card is charged, and a printed order is recorded as a mock Printful job." : "You will continue to Stripe’s secure payment page."}</p>
       <label className="field">
         <span>Email</span>
         <input name="email" type="email" required autoComplete="email" placeholder="you@example.com" />
@@ -94,7 +94,9 @@ export function CheckoutForm({
           </div>
         </fieldset>
       ) : null}
-      {chosen.fulfillment === "printful" && mock ? (
+      {mode === "waitlist" ? (
+        <p className="note">Leave an email. Nothing is charged, and the print is not sent.</p>
+      ) : chosen.fulfillment === "printful" && mode === "mock" ? (
         <>
           <h2>Ship to</h2>
           <label className="field"><span>Name</span><input name="name" required autoComplete="name" /></label>
@@ -114,7 +116,7 @@ export function CheckoutForm({
       ) : chosen.fulfillment === "printful" ? (
         <p className="note">Stripe will ask for the shipping address on the next page. The price includes standard shipping.</p>
       ) : null}
-      <button className="btn-gold" type="submit">{mock ? "Continue to test payment" : "Continue to secure payment"}</button>
+      <button className="btn-gold" type="submit">{mode === "waitlist" ? "Join the list" : mode === "mock" ? "Continue to test payment" : "Continue to secure payment"}</button>
       <p><a href={`/studio`}>Return to the studio</a></p>
       </div>
     </form>

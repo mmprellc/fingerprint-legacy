@@ -3,10 +3,11 @@ import sharp from "sharp";
 import { rgbaToGray } from "@/lib/fingerprint/engine";
 import { producePortrait } from "@/lib/fingerprint/pipeline";
 import { renderStudioPortrait } from "@/lib/fingerprint/studio-art";
+import { ensureRidgeWords } from "@/lib/studio-default";
 import { DEFAULT_FONT, DEFAULT_PRESET, type PrintStyle } from "@/lib/fingerprint/types";
 
 export const runtime = "nodejs";
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 function styleFromForm(raw: string): PrintStyle {
   const fallback: PrintStyle = { font: DEFAULT_FONT, preset: DEFAULT_PRESET, textScale: 1, title: "", script: "" };
@@ -70,7 +71,7 @@ export async function POST(request: Request) {
       .toBuffer({ resolveWithObject: true });
     const gray = rgbaToGray(data, info.width, info.height);
     const tone = ridges === "dark" || ridges === "light" ? ridges : "auto";
-    const style = styleFromForm(String(form.get("style") || ""));
+    const style = ensureRidgeWords(styleFromForm(String(form.get("style") || "")));
     const result = producePortrait(gray, info.width, info.height, style, { ridges: tone });
     const round = (value: number) => Math.round(value * 10) / 10;
     const portraitPng = result.accepted

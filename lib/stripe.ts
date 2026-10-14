@@ -23,11 +23,18 @@ export function publishableKeyMode(): KeyMode {
   return "unset";
 }
 
+/** Production with no Stripe key: the site stays up and checkout collects an email. */
+export function isPrelaunch() {
+  return isProductionDeploy() && secretKeyMode() === "unset";
+}
+
 /**
  * Hosted Checkout does not embed the publishable key. It is still required in
  * live mode so the key pair is from the same mode before a charge is created.
+ * An unset key in production is pre-launch, not a broken checkout.
  */
 export function checkoutBlockedReason(): string | null {
+  if (isPrelaunch()) return null;
   const secret = secretKeyMode();
   const publishable = publishableKeyMode();
   const webhook = Boolean((process.env.STRIPE_WEBHOOK_SECRET || "").trim());
