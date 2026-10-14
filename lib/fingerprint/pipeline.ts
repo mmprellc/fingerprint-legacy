@@ -67,8 +67,13 @@ function retake(reason: RetakeReason, title: string, detail: string, steps: stri
 }
 
 function cropWarning(metrics: CaptureMetrics) {
-  if (metrics.borderInk <= BORDER_INK_CEILING) return "";
+  if (!needsPaperMargin(metrics)) return "";
   return "The print runs to the edge of the photo. A margin of paper reads more clearly, and the portrait still uses the ink that is in the frame.";
+}
+
+/** Edge-to-edge ink. The regression fixtures get a paper margin before the same portrait pipeline. */
+export function needsPaperMargin(metrics: CaptureMetrics) {
+  return metrics.borderInk > BORDER_INK_CEILING;
 }
 
 function guidanceFor(metrics: CaptureMetrics): RetakeGuidance | null {

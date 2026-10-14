@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
-import sharp from "sharp";
-import { rgbaToGray } from "@/lib/fingerprint/engine";
 import { producePortrait } from "@/lib/fingerprint/pipeline";
+import { prepareStudioCapture } from "@/lib/fingerprint/prepare-capture";
 import { renderStudioPortrait } from "@/lib/fingerprint/studio-art";
-import { ensureRidgeWords } from "@/lib/studio-default";
+import { hasRidgeWords } from "@/lib/studio-default";
 import { DEFAULT_FONT, DEFAULT_PRESET, type PrintStyle } from "@/lib/fingerprint/types";
 
 export const runtime = "nodejs";
@@ -48,31 +47,29 @@ export async function POST(request: Request) {
   }
   try {
     const input = Buffer.from(await file.arrayBuffer());
-    const prepared = sharp(input).rotate();
-    const meta = await prepared.metadata();
-    if (!meta.width || !meta.height) throw new Error("unreadable");
-    const long = Math.max(meta.width, meta.height);
-    const scale = long > 1600 ? 1600 / long : long < 700 ? 700 / long : 1;
-    const pipeline = scale === 1 ? prepared : prepared.resize(Math.round(meta.width * scale), Math.round(meta.height * scale), { fit: "fill" });
-    const sized = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-    const pad = Math.max(64, Math.round(Math.min(sized.info.width, sized.info.height) * 0.08));
-    const { data, info } = await sharp(sized.data, {
-      raw: { width: sized.info.width, height: sized.info.height, channels: 4 },
-    })
-      .extend({
-        top: pad,
-        bottom: pad,
-        left: pad,
-        right: pad,
-        background: { r: 244, g: 241, b: 234, alpha: 1 },
-      })
-      .ensureAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-    const gray = rgbaToGray(data, info.width, info.height);
     const tone = ridges === "dark" || ridges === "light" ? ridges : "auto";
-    const style = ensureRidgeWords(styleFromForm(String(form.get("style") || "")));
-    const result = producePortrait(gray, info.width, info.height, style, { ridges: tone });
+    const style = styleFromForm(String(form.get("style") || ""));
+    if (!hasRidgeWords(style)) {
+      return NextResponse.json({
+        accepted: false,
+        portraitPng: "",
+        ridges: [],
+        warnings: [],
+        attempts: [],
+        retake: {
+          reason: "unmatched",
+          title: "Add the words for this print.",
+          detail: "The ridges are the words. Add a name and a verse. The sample names are not written onto a photo you upload.",
+          steps: [
+            "Put the dedication on the center ridges.",
+            "Add the names, one per line, and a whole verse.",
+            "The portrait is drawn from this photo once those words are here.",
+          ],
+        },
+      });
+    }
+    const { gray, width, height } = await prepareStudioCapture(input);
+    const result = producePortrait(gray, width, height, style, { ridges: tone });
     const round = (value: number) => Math.round(value * 10) / 10;
     const portraitPng = result.accepted
       ? await renderStudioPortrait(

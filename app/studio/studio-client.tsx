@@ -8,7 +8,7 @@ import { FrameMockup } from "@/components/FrameMockup";
 import { frameFinishes, isFrameSize, type FrameFinish } from "@/lib/frames";
 import { formatMoney, buyableProducts, productById } from "@/lib/products";
 import type { Occasion } from "@/lib/content";
-import { studioRidgeStyle } from "@/lib/studio-default";
+import { clearSampleRidgeStyle, hasDrawableWords, hasRidgeWords, isSampleRidgeStyle, studioRidgeStyle } from "@/lib/studio-default";
 
 type Draft = {
   key: string;
@@ -85,6 +85,7 @@ export function StudioClient({
   autoload,
   couple,
   occasions,
+  sampleLettering = false,
   waitlist = false,
 }: {
   initialOccasion?: Occasion;
@@ -94,6 +95,8 @@ export function StudioClient({
   autoload: boolean;
   couple: boolean;
   occasions: Occasion[];
+  /** The sample view starts with the sample family. A customer's own photo does not. */
+  sampleLettering?: boolean;
   waitlist?: boolean;
 }) {
   const [prints, setPrints] = useState<Draft[]>([]);
@@ -104,7 +107,11 @@ export function StudioClient({
       textScale: 1,
       title: initialOccasion?.honoree ?? "",
       script: initialOccasion ? "" : "Always with you.",
-      ...(initialOccasion ? { centerName: initialOccasion.honoree, names: initialOccasion.lines, footer: initialOccasion.script } : studioRidgeStyle),
+      ...(initialOccasion
+        ? { centerName: initialOccasion.honoree, names: initialOccasion.lines, footer: initialOccasion.script }
+        : sampleLettering
+          ? studioRidgeStyle
+          : {}),
     },
   );
   const [productId, setProductId] = useState(initialProduct);
@@ -127,6 +134,9 @@ export function StudioClient({
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const started = useRef(false);
+  const pendingFile = useRef<File | null>(null);
+  const pendingSlot = useRef(0);
+  const [waitingSrc, setWaitingSrc] = useState("");
 
   useEffect(() => {
     if (started.current) return;
@@ -257,17 +267,45 @@ export function StudioClient({
     }
   }
 
+  function forgetPortrait() {
+    if (portraitUrlRef.current.startsWith("blob:")) URL.revokeObjectURL(portraitUrlRef.current);
+    portraitUrlRef.current = "";
+    setPortraitUrl("");
+  }
+
+  function holdForWords(file: File, slot: number, nextStyle: PrintStyle) {
+    pendingFile.current = file;
+    pendingSlot.current = slot;
+    setStyle(nextStyle);
+    setWaitingSrc((current) => {
+      if (current.startsWith("blob:")) URL.revokeObjectURL(current);
+      return URL.createObjectURL(file);
+    });
+    setPrints([]);
+    forgetPortrait();
+    setRetake(null);
+    setError("");
+    setNotice("Add a name and a verse. Those words are the ridges of this print. The sample names are left off a photo you upload.");
+  }
+
   async function onFile(file: File | null, slot: number) {
     if (!file) return;
-    setBusy(true);
     setError("");
     stopCamera();
+    const nextStyle = clearSampleRidgeStyle(style);
+    if (!hasRidgeWords(nextStyle)) {
+      holdForWords(file, slot, nextStyle);
+      return;
+    }
+    setBusy(true);
+    if (isSampleRidgeStyle(style)) setStyle(nextStyle);
+    pendingFile.current = null;
     try {
       const prepared = await shrinkForUpload(file);
       const body = new FormData();
       body.set("file", prepared);
       body.set("ridges", tone);
-      body.set("style", JSON.stringify(style));
+      body.set("style", JSON.stringify(nextStyle));
       const response = await fetch("/api/studio/extract", { method: "POST", body });
       const payload = await readJson<{
         accepted?: boolean;
@@ -290,6 +328,10 @@ export function StudioClient({
       }
       setRetake(null);
       setNotice(Array.isArray(payload.warnings) ? payload.warnings.filter(Boolean).join(" ") : "");
+      setWaitingSrc((current) => {
+        if (current.startsWith("blob:")) URL.revokeObjectURL(current);
+        return "";
+      });
       rememberPortrait(payload.portraitPng);
       const textScale = payload.textScale;
       if (typeof textScale === "number" && Math.abs(textScale - style.textScale) > 0.02) {
@@ -397,6 +439,17 @@ export function StudioClient({
   }
 
   useEffect(() => {
+    const file = pendingFile.current;
+    if (!file || !hasDrawableWords(style)) return;
+    const handle = window.setTimeout(() => {
+      if (pendingFile.current !== file) return;
+      pendingFile.current = null;
+      void onFile(file, pendingSlot.current);
+    }, 700);
+    return () => window.clearTimeout(handle);
+  }, [style]);
+
+  useEffect(() => {
     if (!prints.some((print) => print.ridges.length > 8)) return;
     const handle = window.setTimeout(() => {
       void fetch("/api/studio/portrait", {
@@ -457,7 +510,14 @@ export function StudioClient({
           </label>
         </div>
         {!prints.length ? (
-          <p className="lede">Upload a print, or begin with the sample. The ridges you see are the ones the words will follow.</p>
+          waitingSrc ? (
+            <figure>
+              <img src={waitingSrc} alt="Your fingerprint, waiting for its words" />
+              {notice ? <figcaption className="note">{notice}</figcaption> : null}
+            </figure>
+          ) : (
+            <p className="lede">Upload a print, or begin with the sample. The ridges you see are the ones the words will follow.</p>
+          )
         ) : view === "side" ? (
           <div className="compare">
             {prints.map((print) => (
@@ -528,7 +588,15 @@ export function StudioClient({
         {busy ? <p>Reading the ridges…</p> : null}
         <h2>The print</h2>
         <div className="stage-tools">
-          <button type="button" onClick={() => loadNamed("loop", seedLines, 0)}>Try the sample print</button>
+          <button type="button" onClick={() => {
+            pendingFile.current = null;
+            setWaitingSrc((current) => {
+              if (current.startsWith("blob:")) URL.revokeObjectURL(current);
+              return "";
+            });
+            setStyle((current) => (hasRidgeWords(current) && !isSampleRidgeStyle(current) ? current : { ...current, ...studioRidgeStyle }));
+            void loadNamed("loop", seedLines, 0);
+          }}>Try the sample print</button>
           <button type="button" onClick={() => loadCouple(initialOccasion)}>Two intertwined prints</button>
         </div>
         <label className="file-btn">

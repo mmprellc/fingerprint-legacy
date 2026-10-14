@@ -32,6 +32,7 @@ export default async function StudioPage({ searchParams }: { searchParams: Promi
         autoload={autoload && !couple}
         couple={couple}
         occasions={occasions}
+        sampleLettering={params.sample === "1" && !piece}
         waitlist={paymentsMode() === "waitlist"}
       />
     </article>
