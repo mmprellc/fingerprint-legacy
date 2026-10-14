@@ -1,6 +1,6 @@
-import { createOrder, getDesign, getOrder, saveDesign, savePreview, updateOrder } from "../lib/store";
+import { createOrder, getDesign, getOrder, joinLaunchList, listLaunchSignups, saveDesign, savePreview, updateOrder } from "../lib/store";
 import { openFile, previewObjectKey } from "../lib/files";
-import { checkoutBlockedReason, publishableKeyMode, secretKeyMode } from "../lib/stripe";
+import { checkoutBlockedReason, isPrelaunch, publishableKeyMode, secretKeyMode } from "../lib/stripe";
 import { dashboardConfigError, dashboardPassword, dashboardUsesDefaultPassword } from "../lib/store";
 
 async function main() {
@@ -35,6 +35,17 @@ async function main() {
   });
   const again = await getOrder(order.id);
   if (!again || again.status !== "paid" || again.stripeSessionId !== "cs_test_smoke") throw new Error("order roundtrip failed");
+  const signup = await joinLaunchList({
+    email: "Owner@Example.com",
+    designId: design.id,
+    productId: "framed",
+    sizeId: "11x14",
+    frameId: "oak",
+  });
+  const signups = await listLaunchSignups();
+  if (!signups.some((item) => item.id === signup.id && item.email === "owner@example.com" && item.frameId === "oak")) {
+    throw new Error("launch list roundtrip failed");
+  }
 
   const saved = {
     NODE_ENV: process.env.NODE_ENV,
@@ -68,7 +79,7 @@ async function main() {
     setEnv("STRIPE_SECRET_KEY", undefined);
     setEnv("STRIPE_PUBLISHABLE_KEY", undefined);
     setEnv("STRIPE_WEBHOOK_SECRET", undefined);
-    if (!checkoutBlockedReason()) throw new Error("production without stripe should block");
+    if (checkoutBlockedReason() || !isPrelaunch()) throw new Error("production without stripe should be pre-launch");
     setEnv("STRIPE_SECRET_KEY", "rk_test_example");
     setEnv("STRIPE_PUBLISHABLE_KEY", "pk_test_example");
     setEnv("STRIPE_WEBHOOK_SECRET", "whsec_example");

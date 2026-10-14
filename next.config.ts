@@ -4,7 +4,7 @@ const csp = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.stripe.com",
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob: https://*.stripe.com",
+  "img-src 'self' data: blob: https://*.stripe.com https://*.public.blob.vercel-storage.com https://*.private.blob.vercel-storage.com",
   "font-src 'self' data:",
   "connect-src 'self' https://*.stripe.com https://api.stripe.com",
   "frame-src https://*.stripe.com https://*.stripe.network",

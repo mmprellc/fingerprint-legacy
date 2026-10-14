@@ -66,19 +66,17 @@ function retake(reason: RetakeReason, title: string, detail: string, steps: stri
   return { reason, title, detail, steps };
 }
 
+function cropWarning(metrics: CaptureMetrics) {
+  if (!needsPaperMargin(metrics)) return "";
+  return "The print runs to the edge of the photo. A margin of paper reads more clearly, and the portrait still uses the ink that is in the frame.";
+}
+
+/** Edge-to-edge ink. The regression fixtures get a paper margin before the same portrait pipeline. */
+export function needsPaperMargin(metrics: CaptureMetrics) {
+  return metrics.borderInk > BORDER_INK_CEILING;
+}
+
 function guidanceFor(metrics: CaptureMetrics): RetakeGuidance | null {
-  if (metrics.borderInk > BORDER_INK_CEILING) {
-    return retake(
-      "crop",
-      "The print is cut off by the edge of the photo.",
-      "Part of the fingerprint runs out of the frame, so the silhouette would be missing a side or the tip.",
-      [
-        "Leave a margin of paper around the whole print.",
-        "Keep the fingertip and both sides inside the photo.",
-        "Retake with the full print visible.",
-      ],
-    );
-  }
   if (metrics.fill < FILL_FLOOR) {
     return retake(
       "small",
@@ -401,6 +399,7 @@ export function producePortrait(
 ): PortraitResult {
   const metrics = measureCapture(gray, width, height);
   const early = guidanceFor(metrics);
+  const edgeNote = cropWarning(metrics);
   const empty: PortraitResult = {
     accepted: false,
     width,
@@ -457,7 +456,7 @@ export function producePortrait(
         period: extracted.period,
         ridges: extracted.ridges,
         ridgesAreDark: extracted.ridgesAreDark,
-        warnings: extracted.warnings,
+        warnings: edgeNote ? [...extracted.warnings, edgeNote] : extracted.warnings,
         attempts,
         retake: null,
         metrics,
@@ -474,7 +473,7 @@ export function producePortrait(
     period: best?.extracted.period ?? 0,
     ridges: [],
     ridgesAreDark: best?.extracted.ridgesAreDark ?? true,
-    warnings: best?.extracted.warnings ?? [],
+    warnings: [...(best?.extracted.warnings ?? []), ...(edgeNote ? [edgeNote] : [])],
     attempts,
     retake: unmatched(failed),
     metrics,

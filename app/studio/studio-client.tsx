@@ -8,6 +8,7 @@ import { FrameMockup } from "@/components/FrameMockup";
 import { frameFinishes, isFrameSize, type FrameFinish } from "@/lib/frames";
 import { formatMoney, buyableProducts, productById } from "@/lib/products";
 import type { Occasion } from "@/lib/content";
+import { clearSampleRidgeStyle, hasDrawableWords, hasRidgeWords, isSampleRidgeStyle, studioRidgeStyle } from "@/lib/studio-default";
 
 type Draft = {
   key: string;
@@ -34,6 +35,16 @@ function canvasToJpeg(canvas: HTMLCanvasElement, quality: number) {
 }
 
 /** Vercel rejects request bodies over 4.5 MB. The server already scales the long edge to 1600. */
+async function readJson<T>(response: Response): Promise<T> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    const timedOut = response.status === 504 || /timeout|an error occurred/i.test(text);
+    throw new Error(timedOut ? "The portrait took too long to finish. Try the photo once more." : "The portrait service returned an unexpected response. Try again.");
+  }
+}
+
 async function shrinkForUpload(file: File) {
   if (file.size <= UPLOAD_BUDGET) return file;
   let bitmap: ImageBitmap;
@@ -74,6 +85,8 @@ export function StudioClient({
   autoload,
   couple,
   occasions,
+  sampleLettering = false,
+  waitlist = false,
 }: {
   initialOccasion?: Occasion;
   initialPiece?: StudioPiece;
@@ -82,6 +95,9 @@ export function StudioClient({
   autoload: boolean;
   couple: boolean;
   occasions: Occasion[];
+  /** The sample view starts with the sample family. A customer's own photo does not. */
+  sampleLettering?: boolean;
+  waitlist?: boolean;
 }) {
   const [prints, setPrints] = useState<Draft[]>([]);
   const [style, setStyle] = useState<PrintStyle>(
@@ -91,7 +107,11 @@ export function StudioClient({
       textScale: 1,
       title: initialOccasion?.honoree ?? "",
       script: initialOccasion ? "" : "Always with you.",
-      ...(initialOccasion ? { centerName: initialOccasion.honoree, names: initialOccasion.lines, footer: initialOccasion.script } : {}),
+      ...(initialOccasion
+        ? { centerName: initialOccasion.honoree, names: initialOccasion.lines, footer: initialOccasion.script }
+        : sampleLettering
+          ? studioRidgeStyle
+          : {}),
     },
   );
   const [productId, setProductId] = useState(initialProduct);
@@ -104,6 +124,9 @@ export function StudioClient({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [retake, setRetake] = useState<{ title: string; detail: string; steps: string[] } | null>(null);
+  const [notice, setNotice] = useState("");
+  const [portraitUrl, setPortraitUrl] = useState("");
+  const portraitUrlRef = useRef("");
   const [seedLines, setSeedLines] = useState(initialOccasion?.lines ?? ["A name", "A date", "A place they loved"]);
   const [occasionSlug, setOccasionSlug] = useState(initialOccasion?.slug ?? "");
   const [linesOpen, setLinesOpen] = useState(() => !hasList(initialPiece?.style.names) && !hasList(initialPiece?.style.scriptures) && !hasList(initialOccasion?.lines));
@@ -111,6 +134,9 @@ export function StudioClient({
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const started = useRef(false);
+  const pendingFile = useRef<File | null>(null);
+  const pendingSlot = useRef(0);
+  const [waitingSrc, setWaitingSrc] = useState("");
 
   useEffect(() => {
     if (started.current) return;
@@ -241,40 +267,88 @@ export function StudioClient({
     }
   }
 
+  function forgetPortrait() {
+    if (portraitUrlRef.current.startsWith("blob:")) URL.revokeObjectURL(portraitUrlRef.current);
+    portraitUrlRef.current = "";
+    setPortraitUrl("");
+  }
+
+  function holdForWords(file: File, slot: number, nextStyle: PrintStyle) {
+    pendingFile.current = file;
+    pendingSlot.current = slot;
+    setStyle(nextStyle);
+    setWaitingSrc((current) => {
+      if (current.startsWith("blob:")) URL.revokeObjectURL(current);
+      return URL.createObjectURL(file);
+    });
+    setPrints([]);
+    forgetPortrait();
+    setRetake(null);
+    setError("");
+    setNotice("Add a name and a verse. Those words are the ridges of this print. The sample names are left off a photo you upload.");
+  }
+
   async function onFile(file: File | null, slot: number) {
     if (!file) return;
-    setBusy(true);
     setError("");
     stopCamera();
+    const nextStyle = clearSampleRidgeStyle(style);
+    if (!hasRidgeWords(nextStyle)) {
+      holdForWords(file, slot, nextStyle);
+      return;
+    }
+    setBusy(true);
+    if (isSampleRidgeStyle(style)) setStyle(nextStyle);
+    pendingFile.current = null;
     try {
       const prepared = await shrinkForUpload(file);
       const body = new FormData();
       body.set("file", prepared);
       body.set("ridges", tone);
-      body.set("style", JSON.stringify(style));
+      body.set("style", JSON.stringify(nextStyle));
       const response = await fetch("/api/studio/extract", { method: "POST", body });
-      const payload = await response.json();
+      const payload = await readJson<{
+        accepted?: boolean;
+        error?: string;
+        portraitPng?: string;
+        warnings?: string[];
+        textScale?: number;
+        width?: number;
+        height?: number;
+        period?: number;
+        ridges?: Draft["ridges"];
+        retake?: { title: string; detail: string; steps: string[] } | null;
+      }>(response);
       if (!response.ok) throw new Error(payload.error || "The print could not be read.");
-      if (!payload.accepted) {
+      if (!payload.accepted || !payload.portraitPng) {
         setRetake(payload.retake ?? { title: "Retake the photo.", detail: "We could not read a fingerprint from that photo.", steps: [] });
+        setNotice("");
         setPrints((current) => current.filter((_, index) => index !== slot));
         return;
       }
       setRetake(null);
-      if (typeof payload.textScale === "number" && Math.abs(payload.textScale - style.textScale) > 0.02) {
-        setStyle((current) => ({ ...current, textScale: payload.textScale }));
+      setNotice(Array.isArray(payload.warnings) ? payload.warnings.filter(Boolean).join(" ") : "");
+      setWaitingSrc((current) => {
+        if (current.startsWith("blob:")) URL.revokeObjectURL(current);
+        return "";
+      });
+      rememberPortrait(payload.portraitPng);
+      const textScale = payload.textScale;
+      if (typeof textScale === "number" && Math.abs(textScale - style.textScale) > 0.02) {
+        setStyle((current) => ({ ...current, textScale }));
       }
       const src = URL.createObjectURL(file);
+      const width = payload.width ?? 1;
       const draft: Draft = {
         key: `upload-${slot}-${Date.now()}`,
         label: file.name || "Your print",
         src,
-        width: payload.width,
-        height: payload.height,
-        period: payload.period,
-        ridges: payload.ridges,
+        width,
+        height: payload.height ?? 1,
+        period: payload.period ?? 12,
+        ridges: payload.ridges ?? [],
         lines: prints[slot]?.lines?.length ? prints[slot].lines : seedLines,
-        tx: slot ? payload.width * 0.3 : 0,
+        tx: slot ? width * 0.3 : 0,
         ty: 0,
         rotation: slot ? -8 : 0,
         scale: 1,
@@ -347,7 +421,7 @@ export function StudioClient({
           ...(framed ? { frameId } : {}),
         }),
       });
-      const payload = await response.json();
+      const payload = await readJson<{ error?: string; id?: string }>(response);
       if (!response.ok) throw new Error(payload.error || "The design could not be saved.");
       window.location.href = `/checkout?design=${payload.id}`;
     } catch (reason) {
@@ -355,6 +429,45 @@ export function StudioClient({
       setBusy(false);
     }
   }
+
+  function rememberPortrait(png: string) {
+    const bytes = Uint8Array.from(atob(png), (char) => char.charCodeAt(0));
+    const url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+    if (portraitUrlRef.current.startsWith("blob:")) URL.revokeObjectURL(portraitUrlRef.current);
+    portraitUrlRef.current = url;
+    setPortraitUrl(url);
+  }
+
+  useEffect(() => {
+    const file = pendingFile.current;
+    if (!file || !hasDrawableWords(style)) return;
+    const handle = window.setTimeout(() => {
+      if (pendingFile.current !== file) return;
+      pendingFile.current = null;
+      void onFile(file, pendingSlot.current);
+    }, 700);
+    return () => window.clearTimeout(handle);
+  }, [style]);
+
+  useEffect(() => {
+    if (!prints.some((print) => print.ridges.length > 8)) return;
+    const handle = window.setTimeout(() => {
+      void fetch("/api/studio/portrait", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prints: prints.map(toPreview), style, period }),
+      })
+        .then((response) => readJson<{ portraitPng?: string; error?: string }>(response))
+        .then((payload) => {
+          if (typeof payload.portraitPng === "string" && payload.portraitPng) rememberPortrait(payload.portraitPng);
+          else if (!portraitUrlRef.current) setError(String(payload.error || "The portrait could not be drawn."));
+        })
+        .catch((reason) => {
+          if (!portraitUrlRef.current) setError(reason instanceof Error ? reason.message : "The portrait could not be drawn.");
+        });
+    }, 400);
+    return () => window.clearTimeout(handle);
+  }, [prints, style, period]);
 
   const framed = productId === "framed";
   const frameSize = isFrameSize(sizeId) ? sizeId : "11x14";
@@ -397,7 +510,14 @@ export function StudioClient({
           </label>
         </div>
         {!prints.length ? (
-          <p className="lede">Upload a print, or begin with the sample. The ridges you see are the ones the words will follow.</p>
+          waitingSrc ? (
+            <figure>
+              <img src={waitingSrc} alt="Your fingerprint, waiting for its words" />
+              {notice ? <figcaption className="note">{notice}</figcaption> : null}
+            </figure>
+          ) : (
+            <p className="lede">Upload a print, or begin with the sample. The ridges you see are the ones the words will follow.</p>
+          )
         ) : view === "side" ? (
           <div className="compare">
             {prints.map((print) => (
@@ -408,12 +528,10 @@ export function StudioClient({
             ))}
             <figure>
               <figcaption>Word-filled ridges</figcaption>
-              {framed ? (
-                <FrameMockup finish={frameId} size={frameSize}>
-                  <div className={`svg-hold ${fontClass}`} style={{ background: preset.paper }} dangerouslySetInnerHTML={{ __html: svg }} />
-                </FrameMockup>
+              {portraitUrl ? (
+                <img className="portrait-still" src={portraitUrl} alt="Portrait whose ridges are words" />
               ) : (
-                <div className={`svg-hold ${fontClass}`} style={{ background: preset.paper }} dangerouslySetInnerHTML={{ __html: svg }} />
+                <p className="lede">Drawing the ridges…</p>
               )}
             </figure>
           </div>
@@ -425,8 +543,20 @@ export function StudioClient({
                   <img src={prints[0].src} alt="Original fingerprint under the portrait" />
                   <div className={`svg-hold ${fontClass}`} dangerouslySetInnerHTML={{ __html: svg }} />
                 </div>
-              ) : framed && printfulUrl && view === "words" ? (
-                <img className="frame-photo" src={printfulUrl} alt="The portrait photographed in the selected Printful frame" />
+              ) : view === "words" ? (
+                portraitUrl ? (
+                  framed && printfulUrl ? (
+                    <img className="frame-photo" src={printfulUrl} alt="The portrait photographed in the selected Printful frame" />
+                  ) : framed ? (
+                    <FrameMockup finish={frameId} size={frameSize} label={`${frameFinishes.find((item) => item.id === frameId)?.label} frame`}>
+                      <img className="portrait-still" src={portraitUrl} alt="Portrait whose ridges are words" />
+                    </FrameMockup>
+                  ) : (
+                    <img className="portrait-still" src={portraitUrl} alt="Portrait whose ridges are words" />
+                  )
+                ) : (
+                  <p className="lede">Drawing the ridges…</p>
+                )
               ) : framed ? (
                 <FrameMockup finish={frameId} size={frameSize} label={`${frameFinishes.find((item) => item.id === frameId)?.label} frame`}>
                   <div className={`svg-hold ${fontClass}`} style={{ background: preset.paper }} dangerouslySetInnerHTML={{ __html: svg }} />
@@ -437,7 +567,7 @@ export function StudioClient({
             </div>
           </div>
         )}
-        {prints[0] ? <p className="note">{prints.reduce((sum, print) => sum + print.ridges.length, 0)} ridge lines. Step closer with the zoom.{framed ? (printfulUrl ? " This photograph is from Printful." : " The frame is drawn here. Printful’s photograph replaces it when a print key and a public file are set.") : ""}</p> : null}
+        {prints[0] ? <p className="note">{prints.reduce((sum, print) => sum + print.ridges.length, 0)} ridge lines. The words are the ridges.{notice ? ` ${notice}` : ""}{framed ? (printfulUrl ? " This photograph is from Printful." : " The frame is drawn here. Printful’s photograph replaces it when a print key and a public file are set.") : ""}</p> : null}
       </section>
 
       <aside className="controls">
@@ -458,7 +588,15 @@ export function StudioClient({
         {busy ? <p>Reading the ridges…</p> : null}
         <h2>The print</h2>
         <div className="stage-tools">
-          <button type="button" onClick={() => loadNamed("loop", seedLines, 0)}>Try the sample print</button>
+          <button type="button" onClick={() => {
+            pendingFile.current = null;
+            setWaitingSrc((current) => {
+              if (current.startsWith("blob:")) URL.revokeObjectURL(current);
+              return "";
+            });
+            setStyle((current) => (hasRidgeWords(current) && !isSampleRidgeStyle(current) ? current : { ...current, ...studioRidgeStyle }));
+            void loadNamed("loop", seedLines, 0);
+          }}>Try the sample print</button>
           <button type="button" onClick={() => loadCouple(initialOccasion)}>Two intertwined prints</button>
         </div>
         <label className="file-btn">
@@ -612,9 +750,10 @@ export function StudioClient({
             {occasions.map((item) => <option key={item.slug} value={item.slug}>{item.title}</option>)}
           </select>
         </label>
+        {waitlist ? <p className="note">Orders open soon. Joining the list saves your email. Nothing is charged, and nothing is sent to print.</p> : null}
         <div className="checkout-bar">
           <strong>{formatMoney(product.priceCents)}</strong>
-          <button className="btn-gold" type="button" disabled={!ready || busy} onClick={checkout}>Continue to checkout</button>
+          <button className="btn-gold" type="button" disabled={!ready || busy} onClick={checkout}>{waitlist ? "Join the list" : "Continue to checkout"}</button>
         </div>
       </aside>
       <style>{`

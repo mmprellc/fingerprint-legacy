@@ -2,8 +2,9 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
   "functions": {
-    "app/api/studio/extract/route.ts": { "maxDuration": 60 },
-    "app/api/designs/route.ts": { "maxDuration": 60 },
+    "app/api/studio/extract/route.ts": { "maxDuration": 300 },
+    "app/api/studio/portrait/route.ts": { "maxDuration": 300 },
+    "app/api/designs/route.ts": { "maxDuration": 300 },
     "app/api/webhooks/stripe/route.ts": { "maxDuration": 60 },
     "app/api/checkout/mock-complete/route.ts": { "maxDuration": 60 },
     "app/api/frames/mockup/route.ts": { "maxDuration": 60 }

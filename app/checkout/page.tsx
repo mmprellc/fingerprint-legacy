@@ -37,10 +37,23 @@ export default async function CheckoutPage({ searchParams }: { searchParams: Pro
     );
   }
   const product = productById(design.productId);
+  const mode = paymentsMode();
+  const joined = params.joined === "1" && mode === "waitlist";
+  if (joined) {
+    return (
+      <article className="page">
+        <p className="kicker">Checkout</p>
+        <h1>You're on the list.</h1>
+        <p className="lede">We'll write when orders open. Nothing was charged, and nothing was sent to print.</p>
+        <Link className="btn-gold" href="/studio">Return to the studio</Link>
+      </article>
+    );
+  }
   return (
     <article className="page">
       <p className="kicker">Checkout</p>
-      <h1>Review the piece.</h1>
+      <h1>{mode === "waitlist" ? "Orders open soon." : "Review the piece."}</h1>
+      {mode === "waitlist" ? <p className="lede">Join the list. No payment is taken, and nothing is sent to print.</p> : null}
       {error ? <p className="alert">{messageFor(error)}</p> : null}
       <CheckoutForm
           designId={design.id}
@@ -55,7 +68,7 @@ export default async function CheckoutPage({ searchParams }: { searchParams: Pro
             fulfillment: item.fulfillment,
             sizes: item.sizes.map((size) => ({ id: size.id, label: size.label })),
           }))}
-          mock={paymentsMode() === "mock"}
+          mode={mode}
         />
     </article>
   );
@@ -66,5 +79,6 @@ function messageFor(error: string) {
   if (error === "address") return "A printed piece needs a shipping address.";
   if (error === "stripe") return "Stripe did not return a payment page. Try again.";
   if (error === "payments") return "Payments are not ready on this site yet.";
+  if (error === "storage") return "The list could not be saved. The host is missing its database.";
   return "Something about the order needs another look.";
 }

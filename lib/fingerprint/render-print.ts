@@ -48,6 +48,8 @@ export type RenderRequest = {
   frame?: boolean;
   /** Draw in the source pixel grid, with no paper margin, so the portrait lines up with the print. */
   matchSource?: boolean;
+  /** Studio preview: a shorter page, PNG only, no PDF. */
+  preview?: boolean;
 };
 
 export async function renderArtwork(request: RenderRequest) {
@@ -99,7 +101,7 @@ export async function renderArtwork(request: RenderRequest) {
     paperW = Math.round(request.inches[0] * dpi);
     paperH = Math.round(request.inches[1] * dpi);
   } else {
-    const long = 2400;
+    const long = request.preview ? 1000 : 2400;
     const aspect = artW / (artH + captionBlock);
     if (aspect > 1) {
       paperW = long;
@@ -178,6 +180,10 @@ export async function renderArtwork(request: RenderRequest) {
     : "";
   const svg = `<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${paperW}" height="${paperH}" viewBox="0 0 ${paperW} ${paperH}"><rect width="100%" height="100%" fill="${preset.paper}"/>${frame}<defs>${defs.join("")}</defs>${groups.join("")}${caption}</svg>`;
 
+  if (request.preview) {
+    const png = await sharp(Buffer.from(svg)).png({ compressionLevel: 9 }).toBuffer();
+    return { svg, png, pdf: Buffer.alloc(0), width: paperW, height: paperH };
+  }
   const png = await sharp(Buffer.from(svg)).png().toBuffer();
   const pdf = await pngToPdf(png, request.inches, paperW, paperH, request.style.title || "Fingerprint Legacy");
   return { svg, png, pdf, width: paperW, height: paperH };

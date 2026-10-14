@@ -425,6 +425,7 @@ h3 { font-size: 1.7rem; margin: 0 0 0.4rem; }
 .preview-zoom { transform-origin: top center; }
 .preview-frame { position: relative; }
 .preview-frame img.photo, .preview-frame .svg-hold { width: 100%; }
+.portrait-still { width: 100%; height: auto; display: block; background: #fff; }
 .preview-frame .svg-hold { line-height: 0; }
 .preview-frame .svg-hold svg { width: 100%; height: auto; display: block; }
 .overlay-stack { position: relative; }

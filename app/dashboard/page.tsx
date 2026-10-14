@@ -4,7 +4,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { formatMoney, productById } from "@/lib/products";
 import { HostingConfigError } from "@/lib/runtime";
-import { DASHBOARD_COOKIE, listOrders, verifyDashboard, type Order } from "@/lib/store";
+import { DASHBOARD_COOKIE, listLaunchSignups, listOrders, verifyDashboard, type LaunchSignup, type Order } from "@/lib/store";
 
 export const metadata: Metadata = { title: "Orders" };
 export const dynamic = "force-dynamic";
@@ -13,8 +13,9 @@ export default async function DashboardPage() {
   const jar = await cookies();
   if (!verifyDashboard(jar.get(DASHBOARD_COOKIE)?.value)) redirect("/dashboard/login");
   let orders: Order[] = [];
+  let signups: LaunchSignup[] = [];
   try {
-    orders = await listOrders();
+    [orders, signups] = await Promise.all([listOrders(), listLaunchSignups()]);
   } catch (error) {
     if (error instanceof HostingConfigError) {
       return (
@@ -32,6 +33,28 @@ export default async function DashboardPage() {
       <p className="kicker">Owner</p>
       <h1>Orders</h1>
       <form action="/api/dashboard/logout" method="post"><button className="btn-ghost" type="submit">Sign out</button></form>
+      <h2>Launch list</h2>
+      {signups.length === 0 ? (
+        <p className="note">No one has joined the list yet.</p>
+      ) : (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr><th>When</th><th>Email</th><th>Piece</th></tr>
+            </thead>
+            <tbody>
+              {signups.map((signup) => (
+                <tr key={signup.id}>
+                  <td>{new Date(signup.createdAt).toLocaleString()}</td>
+                  <td>{signup.email}</td>
+                  <td>{productById(signup.productId).name} · {signup.sizeId}{signup.frameId ? ` · ${signup.frameId}` : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <h2>Paid orders</h2>
       {orders.length === 0 ? (
         <div className="status-card">
           <p>No orders yet. When a piece is purchased it will appear here, with its status.</p>
