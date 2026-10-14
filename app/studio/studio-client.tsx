@@ -104,6 +104,9 @@ export function StudioClient({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [retake, setRetake] = useState<{ title: string; detail: string; steps: string[] } | null>(null);
+  const [notice, setNotice] = useState("");
+  const [portraitUrl, setPortraitUrl] = useState("");
+  const portraitUrlRef = useRef("");
   const [seedLines, setSeedLines] = useState(initialOccasion?.lines ?? ["A name", "A date", "A place they loved"]);
   const [occasionSlug, setOccasionSlug] = useState(initialOccasion?.slug ?? "");
   const [linesOpen, setLinesOpen] = useState(() => !hasList(initialPiece?.style.names) && !hasList(initialPiece?.style.scriptures) && !hasList(initialOccasion?.lines));
@@ -255,12 +258,15 @@ export function StudioClient({
       const response = await fetch("/api/studio/extract", { method: "POST", body });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "The print could not be read.");
-      if (!payload.accepted) {
+      if (!payload.accepted || !payload.portraitPng) {
         setRetake(payload.retake ?? { title: "Retake the photo.", detail: "We could not read a fingerprint from that photo.", steps: [] });
+        setNotice("");
         setPrints((current) => current.filter((_, index) => index !== slot));
         return;
       }
       setRetake(null);
+      setNotice(Array.isArray(payload.warnings) ? payload.warnings.filter(Boolean).join(" ") : "");
+      rememberPortrait(payload.portraitPng);
       if (typeof payload.textScale === "number" && Math.abs(payload.textScale - style.textScale) > 0.02) {
         setStyle((current) => ({ ...current, textScale: payload.textScale }));
       }
@@ -356,6 +362,31 @@ export function StudioClient({
     }
   }
 
+  function rememberPortrait(png: string) {
+    const bytes = Uint8Array.from(atob(png), (char) => char.charCodeAt(0));
+    const url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+    if (portraitUrlRef.current.startsWith("blob:")) URL.revokeObjectURL(portraitUrlRef.current);
+    portraitUrlRef.current = url;
+    setPortraitUrl(url);
+  }
+
+  useEffect(() => {
+    if (!prints.some((print) => print.ridges.length > 8)) return;
+    const handle = window.setTimeout(() => {
+      void fetch("/api/studio/portrait", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prints: prints.map(toPreview), style, period }),
+      })
+        .then((response) => response.json())
+        .then((payload: { portraitPng?: string }) => {
+          if (payload.portraitPng) rememberPortrait(payload.portraitPng);
+        })
+        .catch(() => undefined);
+    }, 400);
+    return () => window.clearTimeout(handle);
+  }, [prints, style, period]);
+
   const framed = productId === "framed";
   const frameSize = isFrameSize(sizeId) ? sizeId : "11x14";
 
@@ -408,7 +439,9 @@ export function StudioClient({
             ))}
             <figure>
               <figcaption>Word-filled ridges</figcaption>
-              {framed ? (
+              {portraitUrl ? (
+                <img className="portrait-still" src={portraitUrl} alt="Portrait whose ridges are words" />
+              ) : framed ? (
                 <FrameMockup finish={frameId} size={frameSize}>
                   <div className={`svg-hold ${fontClass}`} style={{ background: preset.paper }} dangerouslySetInnerHTML={{ __html: svg }} />
                 </FrameMockup>
@@ -425,6 +458,16 @@ export function StudioClient({
                   <img src={prints[0].src} alt="Original fingerprint under the portrait" />
                   <div className={`svg-hold ${fontClass}`} dangerouslySetInnerHTML={{ __html: svg }} />
                 </div>
+              ) : view === "words" && portraitUrl ? (
+                framed && printfulUrl ? (
+                  <img className="frame-photo" src={printfulUrl} alt="The portrait photographed in the selected Printful frame" />
+                ) : framed ? (
+                  <FrameMockup finish={frameId} size={frameSize} label={`${frameFinishes.find((item) => item.id === frameId)?.label} frame`}>
+                    <img className="portrait-still" src={portraitUrl} alt="Portrait whose ridges are words" />
+                  </FrameMockup>
+                ) : (
+                  <img className="portrait-still" src={portraitUrl} alt="Portrait whose ridges are words" />
+                )
               ) : framed && printfulUrl && view === "words" ? (
                 <img className="frame-photo" src={printfulUrl} alt="The portrait photographed in the selected Printful frame" />
               ) : framed ? (
@@ -437,7 +480,7 @@ export function StudioClient({
             </div>
           </div>
         )}
-        {prints[0] ? <p className="note">{prints.reduce((sum, print) => sum + print.ridges.length, 0)} ridge lines. Step closer with the zoom.{framed ? (printfulUrl ? " This photograph is from Printful." : " The frame is drawn here. Printful’s photograph replaces it when a print key and a public file are set.") : ""}</p> : null}
+        {prints[0] ? <p className="note">{prints.reduce((sum, print) => sum + print.ridges.length, 0)} ridge lines. The words are the ridges.{notice ? ` ${notice}` : ""}{framed ? (printfulUrl ? " This photograph is from Printful." : " The frame is drawn here. Printful’s photograph replaces it when a print key and a public file are set.") : ""}</p> : null}
       </section>
 
       <aside className="controls">

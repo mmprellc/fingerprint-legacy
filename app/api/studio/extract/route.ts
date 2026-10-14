@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import sharp from "sharp";
 import { rgbaToGray } from "@/lib/fingerprint/engine";
 import { producePortrait } from "@/lib/fingerprint/pipeline";
+import { renderStudioPortrait } from "@/lib/fingerprint/studio-art";
 import { DEFAULT_FONT, DEFAULT_PRESET, type PrintStyle } from "@/lib/fingerprint/types";
 
 export const runtime = "nodejs";
@@ -52,11 +53,33 @@ export async function POST(request: Request) {
     const long = Math.max(meta.width, meta.height);
     const scale = long > 1600 ? 1600 / long : long < 700 ? 700 / long : 1;
     const pipeline = scale === 1 ? prepared : prepared.resize(Math.round(meta.width * scale), Math.round(meta.height * scale), { fit: "fill" });
-    const { data, info } = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const sized = await pipeline.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+    const pad = Math.max(64, Math.round(Math.min(sized.info.width, sized.info.height) * 0.08));
+    const { data, info } = await sharp(sized.data, {
+      raw: { width: sized.info.width, height: sized.info.height, channels: 4 },
+    })
+      .extend({
+        top: pad,
+        bottom: pad,
+        left: pad,
+        right: pad,
+        background: { r: 244, g: 241, b: 234, alpha: 1 },
+      })
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true });
     const gray = rgbaToGray(data, info.width, info.height);
     const tone = ridges === "dark" || ridges === "light" ? ridges : "auto";
-    const result = producePortrait(gray, info.width, info.height, styleFromForm(String(form.get("style") || "")), { ridges: tone });
+    const style = styleFromForm(String(form.get("style") || ""));
+    const result = producePortrait(gray, info.width, info.height, style, { ridges: tone });
     const round = (value: number) => Math.round(value * 10) / 10;
+    const portraitPng = result.accepted
+      ? await renderStudioPortrait(
+          [{ ridges: result.ridges, width: result.width, height: result.height, lines: [] }],
+          { ...style, textScale: result.textScale },
+          result.period,
+        )
+      : "";
     return NextResponse.json({
       accepted: result.accepted,
       width: result.width,
@@ -64,6 +87,7 @@ export async function POST(request: Request) {
       period: result.period,
       ridgesAreDark: result.ridgesAreDark,
       warnings: result.warnings,
+      portraitPng,
       textScale: result.textScale,
       retake: result.retake,
       metrics: {

@@ -233,6 +233,7 @@ async function main() {
       expect: { kind: "retake", reason: "contrast" },
     },
     {
+      // Ink that only touches the frame is a warning. This crop cuts through the print, so the portrait checks refuse it.
       id: "cropped",
       style: randyCzyzStyle,
       image: (async () => {
@@ -243,7 +244,7 @@ async function main() {
         const top = Math.round(((meta.height || 1) - height) / 2);
         return prepareBuffer(await sharp(randy).extract({ left, top, width, height }).jpeg().toBuffer());
       })(),
-      expect: { kind: "retake", reason: "crop" },
+      expect: { kind: "retake", reason: "unmatched" },
     },
     {
       id: "too-small",

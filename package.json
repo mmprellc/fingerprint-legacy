@@ -11,6 +11,7 @@
     "generate-samples": "tsx scripts/generate-samples.ts",
     "render-randy": "tsx scripts/render-randy.ts",
     "regression": "tsx scripts/regression-portraits.ts",
+    "upload-portrait": "tsx scripts/upload-portrait.ts",
     "production-check": "tsx scripts/production-check.ts",
     "store-smoke": "tsx scripts/store-smoke.ts"
   },
