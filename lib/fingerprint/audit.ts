@@ -10,7 +10,12 @@ export type Check = {
   detail: string;
 };
 
-const CAP_FLOOR = 6.5;
+/**
+ * Smallest cap that still reads. The rendered cap at scale 1 stays 6.5px;
+ * this floor is what lets a portrait shrink its one body size without the
+ * pipeline pushing the scale back up.
+ */
+const CAP_FLOOR = 5;
 
 function countOf(haystack: string, needle: string) {
   if (!needle) return 0;
@@ -32,9 +37,9 @@ function phrase(name: string | undefined, detail: string | undefined) {
     .join(" ");
 }
 
-/** Cap height in working pixels. The floor is the same one the lettering uses. */
+/** Cap height in working pixels, matching the size the ridges are drawn at. */
 export function capHeight(period: number, textScale = 1) {
-  return Math.max(CAP_FLOOR, period * CAP_RATIO) * (textScale || 1);
+  return Math.max(6.5, period * CAP_RATIO) * (textScale || 1);
 }
 
 /**
@@ -523,6 +528,6 @@ export function layoutPassed(checks: Check[]) {
 export function legibleScale(period: number, textScale: number) {
   const scale = textScale || 1;
   if (capHeight(period, scale) >= CAP_FLOOR - 0.05) return scale;
-  const base = Math.max(CAP_FLOOR, period * CAP_RATIO);
-  return Math.min(1.15, CAP_FLOOR / base);
+  const base = Math.max(6.5, period * CAP_RATIO);
+  return Math.min(1.15, (CAP_FLOOR - 0.02) / base);
 }

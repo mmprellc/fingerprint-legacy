@@ -4,10 +4,12 @@ import sharp from "sharp";
 import { rgbaToGray } from "../lib/fingerprint/engine";
 import { producePortrait } from "../lib/fingerprint/pipeline";
 import { prepareStudioCapture } from "../lib/fingerprint/prepare-capture";
-import { fontSizeFor, plaqueFor, printCore, ridgePitch } from "../lib/fingerprint/lettering";
-import { buildPreviewSvg, mapPrint } from "../lib/fingerprint/preview";
+import { pathLength } from "../lib/fingerprint/geometry";
+import { bodyTrackingEm, bodyWordGapEm, estimateWordWidth, fontSizeFor, plaqueFor, planPortrait, printCore, ridgePitch } from "../lib/fingerprint/lettering";
+import { buildPreviewSvg, fontById, mapPrint } from "../lib/fingerprint/preview";
 import { renderArtwork } from "../lib/fingerprint/render-print";
 import { RANDY_CZYZ_NAMES, RANDY_CZYZ_SCRIPTURES, randyCzyzStyle } from "../lib/pieces";
+import { RANDY_CZYZ_STORIES } from "../fixtures/randy-czyz-stories";
 import type { Ridge } from "../lib/fingerprint/types";
 
 const sourcePath = path.join(process.cwd(), "public/pieces/randy-source.jpg");
@@ -89,6 +91,48 @@ async function main() {
   const bodySize = fontSizeFor(result.period, randyCzyzStyle.textScale || 1);
   if (plaque.lines.some((line) => line.fontSize < bodySize * 1.55)) throw new Error("Plaque type is smaller than 1.6 times the ridges");
   if (/<path\b[^>]*\sstroke=/.test(preview.svg)) throw new Error("The preview still draws a stroke");
+  const bodyJoin = [...preview.svg.matchAll(/<text class="ridge ridge-body"[^>]*><textPath[^>]*>([^<]*)<\/textPath>/g)]
+    .map((match) => match[1])
+    .join(" ");
+  let storyAt = 0;
+  for (const story of RANDY_CZYZ_STORIES) {
+    const at = bodyJoin.indexOf(story, storyAt);
+    if (at < 0) throw new Error(`A story is not whole on the ridges: ${story.slice(0, 48)}`);
+    storyAt = at + story.length;
+  }
+  const face = fontById(randyCzyzStyle.font);
+  const tracking = -bodySize * bodyTrackingEm(randyCzyzStyle.textScale);
+  const wordGap = bodySize * bodyWordGapEm(randyCzyzStyle.textScale);
+  const planned = planPortrait(
+    result.ridges,
+    randyCzyzStyle,
+    [],
+    result.period,
+    (word) => estimateWordWidth(word, bodySize, face.charRatio, tracking),
+    wordGap,
+  );
+  let glyph = 0;
+  let drawn = 0;
+  let lineLen = 0;
+  for (const runs of planned) {
+    for (const run of runs) {
+      const length = pathLength(run.points);
+      drawn += length;
+      if (run.role === "line") {
+        lineLen += length;
+        continue;
+      }
+      const words = run.text.split(/\s+/).filter(Boolean);
+      let used = 2;
+      words.forEach((word, index) => {
+        used += (index ? wordGap : 0) + estimateWordWidth(word, bodySize, face.charRatio, tracking);
+      });
+      glyph += Math.min(length, used);
+    }
+  }
+  const textFraction = glyph / Math.max(1, drawn);
+  console.log(`ridge text ${(textFraction * 100).toFixed(1)}% lines ${(lineLen / Math.max(1, drawn) * 100).toFixed(1)}% of ${drawn.toFixed(0)}px`);
+  if (textFraction < 0.9) throw new Error(`Only ${(textFraction * 100).toFixed(1)}% of the ridge length is text`);
 
   const out = path.join(process.cwd(), "public/pieces");
   fs.mkdirSync(out, { recursive: true });
@@ -120,7 +164,7 @@ async function main() {
     const pairLabel = 56;
     const pairW = beforeW + afterW + pairGap * 3;
     const pairH = full.height + pairLabel + pairGap;
-    const pair = `<svg xmlns="http://www.w3.org/2000/svg" width="${pairW}" height="${pairH}"><rect width="100%" height="100%" fill="#FFFFFF"/><text x="${pairGap}" y="36" font-family="Georgia" font-size="22" fill="#111111">Previous</text><text x="${beforeW + pairGap * 2}" y="36" font-family="Georgia" font-size="22" fill="#111111">Open plaque, text only</text></svg>`;
+    const pair = `<svg xmlns="http://www.w3.org/2000/svg" width="${pairW}" height="${pairH}"><rect width="100%" height="100%" fill="#FFFFFF"/><text x="${pairGap}" y="36" font-family="Georgia" font-size="22" fill="#111111">Previous</text><text x="${beforeW + pairGap * 2}" y="36" font-family="Georgia" font-size="22" fill="#111111">Names fill the ridges</text></svg>`;
     await sharp(Buffer.from(pair))
       .composite([
         { input: before, left: pairGap, top: pairLabel },
@@ -157,6 +201,24 @@ async function main() {
     .png()
     .toBuffer();
   fs.writeFileSync(path.join(out, "randy-czyz-closeup.png"), close);
+  const lowerTop = Math.round(full.height * 0.46);
+  const lowerHeight = Math.round(full.height * 0.38);
+  const lower = await sharp(full.png)
+    .extract({ left: 0, top: lowerTop, width: full.width, height: lowerHeight })
+    .resize({ width: 2200, kernel: "lanczos3" })
+    .png()
+    .toBuffer();
+  fs.writeFileSync(path.join(out, "randy-czyz-lower.png"), lower);
+  const coreSheet = await sharp(full.png)
+    .extract({
+      left: Math.max(0, Math.round(full.width * 0.22)),
+      top: Math.max(0, Math.round(full.height * 0.3)),
+      width: Math.min(full.width, Math.round(full.width * 0.56)),
+      height: Math.min(full.height - Math.round(full.height * 0.3), Math.round(full.height * 0.34)),
+    })
+    .png()
+    .toBuffer();
+  fs.writeFileSync(path.join(out, "randy-czyz-core.png"), coreSheet);
 
   const gap = 36;
   const label = 48;
@@ -215,6 +277,8 @@ async function main() {
   const copies: [string, string][] = [
     ["randy-czyz.png", "randy_czyz_words_artwork.png"],
     ["randy-czyz-closeup.png", "randy_czyz_words_closeup.png"],
+    ["randy-czyz-lower.png", "randy_czyz_lower_half.png"],
+    ["randy-czyz-core.png", "randy_czyz_core.png"],
     ["randy-czyz-compare.png", "randy_czyz_words_side_by_side.png"],
     ["randy-czyz-overlay.png", "randy_czyz_words_overlay.png"],
     ["randy-czyz.pdf", "randy_czyz_words.pdf"],

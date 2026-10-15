@@ -28,6 +28,16 @@ export const PITCH_LINES = 1.4;
 /** A body line shorter than this is a fragment and is left off the print. */
 export const MIN_BODY_WORDS = 8;
 
+/** Body tracking, in ems. A scale below the default tightens it so a short ridge can hold a whole name line. */
+export function bodyTrackingEm(textScale = 1) {
+  return (textScale || 1) < 0.98 ? 0.08 : 0.04;
+}
+
+/** Space between body words, in ems. Kept in step with the tracking above. */
+export function bodyWordGapEm(textScale = 1) {
+  return (textScale || 1) < 0.98 ? 0.12 : 0.16;
+}
+
 export function ridgeWidth(period: number) {
   return Math.max(2.4, period * RIDGE_WIDTH_RATIO);
 }
@@ -869,6 +879,49 @@ export function fillStories(
 }
 
 /**
+ * As many whole names as the ridge can hold, in list order, at least eight words.
+ * A name that does not fit stays for the next ridge. Nothing is split, and a short
+ * remainder is left blank so the line never becomes a fragment.
+ */
+function takeWholeNames(
+  points: Pt[],
+  names: string[],
+  cursor: { i: number },
+  measure: (word: string) => number,
+  gap: number,
+) {
+  if (!names.length || points.length < 2) return "";
+  const length = pathLength(points);
+  const start = cursor.i;
+  const words: string[] = [];
+  let used = 2;
+  let guard = 0;
+  while (guard++ < names.length * 8) {
+    const name = names[cursor.i % names.length];
+    const parts = name.split(/\s+/).filter(Boolean);
+    if (!parts.length) {
+      cursor.i += 1;
+      continue;
+    }
+    let need = 0;
+    for (let i = 0; i < parts.length; i++) need += (words.length + i > 0 ? gap : 0) + measure(parts[i]);
+    if (used + need > length - 1.5) break;
+    words.push(...parts);
+    used += need;
+    cursor.i += 1;
+  }
+  if (words.length < MIN_BODY_WORDS) {
+    cursor.i = start;
+    return "";
+  }
+  return words.join(" ");
+}
+
+function sentenceClosed(text: string) {
+  return /[.!?]["”']*$/.test(text.trim());
+}
+
+/**
  * Each dedication is one phrase on one ridge: the name and date stay together.
  * Names and verses fill every other run, including the unused ends of a dedication ridge.
  */
@@ -1041,48 +1094,107 @@ export function planPortrait(
       placed.push({ ridge: bodySlots[index].ridge, points: run.points, text: run.text });
     });
   }
+  const storiesDone = stories.length > 0 && storyCursor.next >= stories.length;
+  const measureBody = (word: string) => measure(word, "body");
+  const nameCycle = { i: 0 };
+  const consumed = new Set<Pt[]>();
+  if (storiesDone && source.names.length) {
+    let lastText = -1;
+    placed.forEach((run, index) => {
+      if (run.text) lastText = index;
+    });
+    for (let index = lastText + 1; index < placed.length; index++) {
+      if (placed[index].text) continue;
+      const text = takeWholeNames(placed[index].points, source.names, nameCycle, measureBody, gap);
+      if (text) placed[index].text = text;
+    }
+    // Gaps left between stories stay out of the story sequence. Their names are drawn after it.
+    for (let index = 0; index <= lastText; index++) {
+      if (placed[index].text) continue;
+      const text = takeWholeNames(placed[index].points, source.names, nameCycle, measureBody, gap);
+      if (!text) continue;
+      placed[index].text = text;
+      consumed.add(placed[index].points);
+    }
+  }
   const kept: Pt[][] = [];
   const keptSamples: Pt[] = [];
   const remember = (points: Pt[]) => {
     kept.push(points);
     keptSamples.push(...interiorSamples(points));
   };
-  const tails: { ridge: number; points: Pt[] }[] = [];
-  for (const run of placed) {
-    if (!run.text) continue;
-    const length = pathLength(run.points);
-    const words = run.text.split(/\s+/).filter(Boolean);
+  const usedLength = (text: string) => {
+    const words = text.split(/\s+/).filter(Boolean);
     let used = 2;
     words.forEach((word, index) => {
-      used += (index ? gap : 0) + measure(word, "body");
+      used += (index ? gap : 0) + measureBody(word);
     });
+    return used;
+  };
+  const tails: { ridge: number; points: Pt[] }[] = [];
+  const deferred: { ridge: number; points: Pt[]; text: string }[] = [];
+  for (const run of placed) {
+    if (!run.text) continue;
+    if (consumed.has(run.points)) {
+      deferred.push({ ridge: run.ridge, points: run.points, text: run.text });
+      continue;
+    }
+    const length = pathLength(run.points);
+    const used = usedLength(run.text);
     const head = used >= length * 0.82 ? run.points : slicePath(run.points, 0, Math.min(length, used));
-    plans[run.ridge].push({ points: run.points, text: run.text, role: "body", order: order++ });
+    const bodyPoints = run.points;
+    plans[run.ridge].push({ points: bodyPoints, text: run.text, role: "body", order: order++ });
     remember(head.length > 1 ? head : run.points);
-    if (used < length - period * 2.4) {
+    if (storiesDone && used <= length - period * 3) {
+      const tail = slicePath(run.points, Math.min(length, used + 2), length);
+      if (pathLength(tail) < period * 3) continue;
+      const text = sentenceClosed(run.text) ? takeWholeNames(tail, source.names, nameCycle, measureBody, gap) : "";
+      if (text) {
+        const fitted = slicePath(run.points, 0, Math.min(length, used));
+        if (fitted.length > 1) plans[run.ridge][plans[run.ridge].length - 1].points = fitted;
+        deferred.push({ ridge: run.ridge, points: tail, text });
+      } else if (pathLength(tail) >= period * 2.4) tails.push({ ridge: run.ridge, points: tail });
+      continue;
+    }
+    if (!storiesDone && plaque && used < length - period * 2.4) {
       const tail = slicePath(run.points, Math.min(length, used + 2), length);
       if (pathLength(tail) >= period * 2.4) tails.push({ ridge: run.ridge, points: tail });
     }
   }
-  const storiesDone = stories.length > 0 && storyCursor.next >= stories.length;
+  for (const extra of deferred) {
+    const length = pathLength(extra.points);
+    const used = usedLength(extra.text);
+    const head = used >= length * 0.82 ? extra.points : slicePath(extra.points, 0, Math.min(length, used));
+    plans[extra.ridge].push({ points: extra.points, text: extra.text, role: "body", order: order++ });
+    remember(head.length > 1 ? head : extra.points);
+  }
+  const rims = rimWeights(ridges);
+  const farFromPlaque = (points: Pt[]) => {
+    if (!plaque) return true;
+    return points.every((point) => {
+      const nx = (point.x - plaque.cx) / plaque.rx;
+      const ny = (point.y - plaque.cy) / plaque.ry;
+      return nx * nx + ny * ny > 1.44;
+    });
+  };
   if (storiesDone || (stories.length === 0 && plaque)) {
-    if (storiesDone) {
-      for (const tail of tails) {
-        if (crossesKept(tail.points, kept)) continue;
-        plans[tail.ridge].push({ points: tail.points, text: "", role: "line", order: order++ });
-        remember(tail.points);
-      }
-    }
     const leftovers = [
-      ...(storiesDone ? placed.filter((run) => !run.text).map((run) => ({ ridge: run.ridge, points: run.points, length: pathLength(run.points) })) : []),
-      ...remnants.map((slot) => ({ ridge: slot.ridge, points: slot.points, length: pathLength(slot.points) })),
-    ].sort((a, b) => b.length - a.length);
+      ...(storiesDone
+        ? [
+            ...placed.filter((run) => !run.text).map((run) => ({ ridge: run.ridge, points: run.points })),
+            ...tails.map((tail) => ({ ridge: tail.ridge, points: tail.points })),
+          ]
+        : tails.map((tail) => ({ ridge: tail.ridge, points: tail.points }))),
+      ...remnants.map((slot) => ({ ridge: slot.ridge, points: slot.points })),
+    ].sort((a, b) => pathLength(b.points) - pathLength(a.points));
     const lineGap = tangle;
     const lineKeep = period * 2.4;
     for (const slot of leftovers) {
+      // A drawn line is only for an outer ridge the names could not fill, and never beside the plaque.
+      if (storiesDone && ((rims[slot.ridge] ?? 0) < 0.62 || !farFromPlaque(slot.points))) continue;
       for (const piece of trimAgainst(slot.points, keptSamples, lineGap, lineKeep)) {
         for (const part of trimAgainst(piece, keptSamples, lineGap, lineKeep)) {
-          if (crossesKept(part, kept)) continue;
+          if (crossesKept(part, kept) || !farFromPlaque(part)) continue;
           plans[slot.ridge].push({ points: part, text: "", role: "line", order: order++ });
           remember(part);
         }
@@ -1095,7 +1207,7 @@ export function planPortrait(
 /** How far a ridge centerline stays outside the plaque, so the letters clear the opening. */
 export function plaqueClearance(period: number, textScale = 1) {
   const body = fontSizeFor(period, textScale);
-  return Math.max(period * 0.85, body * 1.05);
+  return Math.max(period * 1.45, body * 1.7);
 }
 
 /** Width of a leftover ridge. It matches the stem of the body type, and it is never a heavy stroke. */

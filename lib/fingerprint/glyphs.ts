@@ -38,14 +38,14 @@ export type LaidGlyph = {
   baseline: number;
 };
 
-export function layoutRun(font: GlyphFont, text: string, points: Pt[], fontSize: number, trackingEm = 0.05) {
+export function layoutRun(font: GlyphFont, text: string, points: Pt[], fontSize: number, trackingEm = 0.04, gapEm = 0.16) {
   const tracking = -fontSize * trackingEm;
   const shift = baselineShift(font, fontSize);
   const glyphs = placeGlyphs(
     text,
     pathLength(points),
     (ch) => advanceOf(font, ch, fontSize),
-    fontSize * 0.16,
+    fontSize * gapEm,
     tracking,
   );
   const placed: LaidGlyph[] = [];

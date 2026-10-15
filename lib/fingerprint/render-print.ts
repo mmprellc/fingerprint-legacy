@@ -2,7 +2,7 @@ import { PDFDocument } from "pdf-lib";
 import sharp from "sharp";
 import { nameSpread } from "./audit";
 import { loadRidgeFace, layoutRun, type GlyphFont } from "./glyphs";
-import { estimateWordWidth, fallbackWidth, fontSizeFor, plaqueFor, planPortrait, ribbonPath, rimWeights, roleScale } from "./lettering";
+import { bodyTrackingEm, bodyWordGapEm, estimateWordWidth, fallbackWidth, fontSizeFor, plaqueFor, planPortrait, ribbonPath, rimWeights, roleScale } from "./lettering";
 import { fontById, mapPrint, presetById } from "./preview";
 import type { PreviewPrint } from "./preview";
 import type { PrintStyle } from "./types";
@@ -139,10 +139,10 @@ export async function renderArtwork(request: RenderRequest) {
       request.period,
       (word, role) => {
         const size = sourceSize * roleScale(role);
-        const tracking = role === "body" ? 0.04 : 0.045;
+        const tracking = role === "body" ? bodyTrackingEm(request.style.textScale) : 0.045;
         return estimateWordWidth(word, size, faceId.charRatio, -size * tracking);
       },
-      sourceSize * roleScale("body") * 0.16,
+      sourceSize * roleScale("body") * bodyWordGapEm(request.style.textScale),
     );
     const place = (point: { x: number; y: number }) => ({
       x: ox + (point.x - minX) * fit,
@@ -183,7 +183,14 @@ export async function renderArtwork(request: RenderRequest) {
         ridgeSizes.add(size.toFixed(2));
         const ridgeInk = run.role === "body" ? bodyInk : mixHex(ink, "#121416", 0.86);
         const placed = run.points.map(place);
-        const glyphs = layoutRun(face, run.text, placed, size, run.role === "body" ? 0.04 : 0.045);
+        const glyphs = layoutRun(
+          face,
+          run.text,
+          placed,
+          size,
+          run.role === "body" ? bodyTrackingEm(request.style.textScale) : 0.045,
+          run.role === "body" ? bodyWordGapEm(request.style.textScale) : 0.16,
+        );
         for (const glyph of glyphs) {
           body.push(
             `<g transform="translate(${glyph.x.toFixed(2)} ${glyph.y.toFixed(2)}) rotate(${glyph.angle.toFixed(2)})"><path d="${glyph.d}" fill="${ridgeInk}"/></g>`,

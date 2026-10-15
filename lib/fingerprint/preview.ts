@@ -1,5 +1,5 @@
 import { escapeXml, toPathD } from "./geometry";
-import { estimateWordWidth, fallbackWidth, fontSizeFor, plaqueFor, planPortrait, ribbonPath, rimWeights, roleScale } from "./lettering";
+import { bodyTrackingEm, bodyWordGapEm, estimateWordWidth, fallbackWidth, fontSizeFor, plaqueFor, planPortrait, ribbonPath, rimWeights, roleScale } from "./lettering";
 import { FONTS, INK_PRESETS, type PrintStyle, type Ridge } from "./types";
 
 export { fontSizeFor };
@@ -127,9 +127,9 @@ export function buildPreviewSvg(
       period,
       (word, role) => {
         const size = fontSize * roleScale(role);
-        return estimateWordWidth(word, size, font.charRatio, -size * (role === "body" ? 0.04 : 0.045));
+        return estimateWordWidth(word, size, font.charRatio, -size * (role === "body" ? bodyTrackingEm(style.textScale) : 0.045));
       },
-      bodySize * 0.16,
+      bodySize * bodyWordGapEm(style.textScale),
     );
     const plaque = plaqueFor(ridges, style, period);
     if (plaque) {
@@ -163,7 +163,7 @@ export function buildPreviewSvg(
       const id = `r${index++}`;
       defs.push(`<path id="${id}" d="${toPathD(run.points)}"/>`);
       const dy = (size * 0.38).toFixed(2);
-      const tracking = run.role === "body" ? -size * 0.04 : -size * 0.045;
+      const tracking = run.role === "body" ? -size * bodyTrackingEm(style.textScale) : -size * 0.045;
       texts.push(
         `<text class="ridge ridge-${run.role}" font-size="${size.toFixed(2)}" letter-spacing="${tracking.toFixed(2)}" fill="${ink}" font-family="${escapeXml(opts?.fontFamily || font.family)}"><textPath href="#${id}" dy="${dy}">${escapeXml(run.text)}</textPath></text>`,
       );

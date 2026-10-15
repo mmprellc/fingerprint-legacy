@@ -44,7 +44,7 @@ export const RANDY_CZYZ_SCRIPTURES = [
 export const randyCzyzStyle: PrintStyle = {
   font: DEFAULT_FONT,
   preset: DEFAULT_PRESET,
-  textScale: 1,
+  textScale: 0.86,
   title: "",
   script: "",
   footer: "",
