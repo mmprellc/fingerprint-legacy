@@ -3,6 +3,7 @@ import { producePortrait } from "@/lib/fingerprint/pipeline";
 import { prepareStudioCapture } from "@/lib/fingerprint/prepare-capture";
 import { renderStudioPortrait } from "@/lib/fingerprint/studio-art";
 import { hasRidgeWords } from "@/lib/studio-default";
+import { readPrintStyle } from "@/lib/fingerprint/read-style";
 import { DEFAULT_FONT, DEFAULT_PRESET, type PrintStyle } from "@/lib/fingerprint/types";
 
 export const runtime = "nodejs";
@@ -12,24 +13,7 @@ function styleFromForm(raw: string): PrintStyle {
   const fallback: PrintStyle = { font: DEFAULT_FONT, preset: DEFAULT_PRESET, textScale: 1, title: "", script: "" };
   if (!raw) return fallback;
   try {
-    const parsed = JSON.parse(raw) as Partial<PrintStyle>;
-    const strings = (value: unknown) => (Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []);
-    const text = (value: unknown) => (typeof value === "string" ? value : "");
-    return {
-      ...fallback,
-      font: parsed.font === "baskerville" ? "baskerville" : DEFAULT_FONT,
-      preset: text(parsed.preset) || fallback.preset,
-      textScale: typeof parsed.textScale === "number" && Number.isFinite(parsed.textScale) ? parsed.textScale : 1,
-      title: text(parsed.title),
-      script: text(parsed.script),
-      footer: text(parsed.footer),
-      centerName: text(parsed.centerName),
-      centerDetail: text(parsed.centerDetail),
-      secondaryName: text(parsed.secondaryName),
-      secondaryDetail: text(parsed.secondaryDetail),
-      names: strings(parsed.names),
-      scriptures: strings(parsed.scriptures),
-    };
+    return readPrintStyle(JSON.parse(raw) as Partial<PrintStyle>);
   } catch {
     return fallback;
   }

@@ -1,5 +1,5 @@
 import { pathLength, slicePath } from "./geometry";
-import { estimateWordWidth, fontSizeFor, planPortrait, ridgePitch, roleScale } from "./lettering";
+import { estimateWordWidth, fontSizeFor, inPlaque, planPortrait, plaqueFor, ridgePitch, roleScale } from "./lettering";
 import { fontById } from "./preview";
 import type { Check } from "./audit";
 import type { ExtractResult, PrintStyle, Pt } from "./types";
@@ -93,6 +93,10 @@ function textSpans(result: ExtractResult, style: PrintStyle) {
   const spans: Pt[][] = [];
   planned.forEach((runs) => {
     for (const run of runs) {
+      if (run.role === "line" && run.points.length > 1) {
+        spans.push(run.points);
+        continue;
+      }
       if (!run.text) continue;
       const roleSize = fontSize * roleScale(run.role);
       const tracking = run.role === "body" ? 0.04 : 0.045;
@@ -207,6 +211,7 @@ export function scoreFidelity(result: ExtractResult, style: PrintStyle): Fidelit
   if (!mask || !gray || !orient || !coherence || period < 4 || result.ridges.length < 8) return null;
 
   const spans = textSpans(result, style);
+  const plaque = plaqueFor(result.ridges, style, period);
   const reach = ridgePitch(period) * COVER_REACH;
   const near = paintNear(spans, w, h, reach);
   // Spill uses the text itself, not the coverage halo, so a print that fills
@@ -220,9 +225,10 @@ export function scoreFidelity(result: ExtractResult, style: PrintStyle): Fidelit
     const row = y * w;
     for (let x = 0; x < w; x += step) {
       const inside = mask[row + x] === 1;
+      const onPlaque = Boolean(plaque && inPlaque(x, y, plaque));
       if (inside) {
         ink++;
-        if (near[row + x]) hit++;
+        if (near[row + x] || onPlaque) hit++;
       } else if (body[row + x]) spill++;
     }
   }
@@ -237,6 +243,7 @@ export function scoreFidelity(result: ExtractResult, style: PrintStyle): Fidelit
     for (let x = 0; x < w; x += 4) {
       const i = row + x;
       if (!mask[i] || coherence[i] < 0.28) continue;
+      if (plaque && inPlaque(x, y, plaque)) continue;
       flowN++;
       const nearest = grid.nearest(x, y, reach);
       if (!nearest) continue;
@@ -252,7 +259,19 @@ export function scoreFidelity(result: ExtractResult, style: PrintStyle): Fidelit
     photo[i] = dark ? 255 - tone : tone;
   }
   const inkRadius = Math.max(1.4, period * 0.36);
-  const drawn = paintInk(spans, w, h, inkRadius);
+  const drawnSpans = spans.slice();
+  if (plaque) {
+    const band = Math.max(2, period * 0.35);
+    for (let y = plaque.cy - plaque.ry; y <= plaque.cy + plaque.ry; y += band) {
+      const dy = (y - plaque.cy) / plaque.ry;
+      const half = plaque.rx * Math.sqrt(Math.max(0, 1 - dy * dy));
+      drawnSpans.push([
+        { x: plaque.cx - half, y },
+        { x: plaque.cx + half, y },
+      ]);
+    }
+  }
+  const drawn = paintInk(drawnSpans, w, h, inkRadius);
   // Whole-frame blocks, about two ridge spacings. Paper stays paper on both
   // sides, so the silhouette itself is part of the score. A missing half of
   // the oval disagrees; letter shapes and valley phase do not.

@@ -30,12 +30,18 @@ async function studioExtract(input: Buffer) {
 }
 
 async function main() {
+  const previousArt = path.join("/tmp", "randy-czyz-previous.png");
+  const currentArt = path.join(process.cwd(), "public/pieces/randy-czyz.png");
+  if (fs.existsSync(currentArt)) fs.copyFileSync(currentArt, previousArt);
   if (RANDY_CZYZ_NAMES.length !== 29) throw new Error(`Expected 29 names, found ${RANDY_CZYZ_NAMES.length}`);
   const joined = RANDY_CZYZ_SCRIPTURES.join("\n");
   if (!joined.includes("—") || !joined.includes("–") || !joined.includes("6:24–26")) {
     throw new Error("Scripture punctuation changed");
   }
-  if (!(randyCzyzStyle.footer || "").includes("—")) throw new Error("Footer dash changed");
+  if (randyCzyzStyle.headerName !== "Randy S. Czyz") throw new Error("Header name changed");
+  if (!(randyCzyzStyle.headerDates || "").includes("–")) throw new Error("Header dates need an en dash");
+  if (randyCzyzStyle.signature !== "Fingerprint Legacy") throw new Error("Signature changed");
+  if (!randyCzyzStyle.plaque) throw new Error("Randy's dedications belong on the plaque");
 
   const input = fs.readFileSync(sourcePath);
   const { result, photo } = await studioExtract(input);
@@ -53,12 +59,11 @@ async function main() {
   for (const name of new Set(RANDY_CZYZ_NAMES)) assertIncludes(preview.svg, name, "name");
   if (assertIncludes(preview.svg, "Jacob Czyz", "Jacob") < 2) throw new Error("Jacob Czyz was not repeated");
   if (assertIncludes(preview.svg, "Martin Pierce", "Martin") < 2) throw new Error("Martin Pierce was not repeated");
-  for (const phrase of ["Isaiah", "41:10", "73:26", "119:105", "6:24–26", "Numbers", "4.20.1955", "10.17.1955", "Maryanne Czyz", "righteous", "lamp"]) {
+  for (const phrase of ["Isaiah", "41:10", "73:26", "119:105", "6:24–26", "Numbers", "Randy S. Czyz", "04.20.1955 – 04.20.2026", "Fingerprint Legacy", "Randy Czyz", "4.20.1955", "Maryanne Czyz", "10.17.1955", "Married", "11.16.1973", "righteous", "lamp"]) {
     assertIncludes(preview.svg, phrase, "phrase");
   }
-  if (preview.svg.includes("plaque-name") || preview.svg.includes("ridgekeep")) {
-    throw new Error("The dedications are still a separate block instead of ridges");
-  }
+  if (preview.svg.includes("RANDY CZYZ FINGERPRINT LEGACY")) throw new Error("The old title is still on the portrait");
+  if (!preview.svg.includes('class="plaque"')) throw new Error("The center plaque is missing");
 
   const out = path.join(process.cwd(), "public/pieces");
   fs.mkdirSync(out, { recursive: true });
@@ -79,6 +84,26 @@ async function main() {
   });
   fs.writeFileSync(path.join(out, "randy-czyz.png"), full.png);
   fs.writeFileSync(path.join(out, "randy-czyz.pdf"), full.pdf);
+  if (fs.existsSync(previousArt)) {
+    const before = await sharp(previousArt).resize({ height: full.height, fit: "inside", background: "#FFFFFF" }).png().toBuffer();
+    const beforeMeta = await sharp(before).metadata();
+    const after = await sharp(full.png).resize({ height: full.height, fit: "inside", background: "#FFFFFF" }).png().toBuffer();
+    const afterMeta = await sharp(after).metadata();
+    const beforeW = beforeMeta.width || 1;
+    const afterW = afterMeta.width || 1;
+    const pairGap = 48;
+    const pairLabel = 56;
+    const pairW = beforeW + afterW + pairGap * 3;
+    const pairH = full.height + pairLabel + pairGap;
+    const pair = `<svg xmlns="http://www.w3.org/2000/svg" width="${pairW}" height="${pairH}"><rect width="100%" height="100%" fill="#FFFFFF"/><text x="${pairGap}" y="36" font-family="Georgia" font-size="22" fill="#111111">Previous</text><text x="${beforeW + pairGap * 2}" y="36" font-family="Georgia" font-size="22" fill="#111111">Name, plaque, signature</text></svg>`;
+    await sharp(Buffer.from(pair))
+      .composite([
+        { input: before, left: pairGap, top: pairLabel },
+        { input: after, left: beforeW + pairGap * 2, top: pairLabel },
+      ])
+      .png()
+      .toFile(path.join(out, "randy-czyz-before-after.png"));
+  }
 
   const matched = await renderArtwork({
     prints: [print],
@@ -86,12 +111,6 @@ async function main() {
     period: result.period,
     matchSource: true,
   });
-  if (preview.svg.split("Randy Czyz 4.20.1955").length - 1 !== 1) {
-    throw new Error("Randy's name and date should sit together once on the core");
-  }
-  if (preview.svg.split("Maryanne Czyz 10.17.1955").length - 1 !== 1) {
-    throw new Error("Maryanne's name and date should sit together once on the next ridge");
-  }
   if (/stroke-linecap/.test(matched.svg) || /<path\b[^>]*\sstroke=/.test(matched.svg)) {
     throw new Error("The portrait still draws a stroke. Every ridge must be text.");
   }
@@ -175,11 +194,15 @@ async function main() {
     ["randy-czyz-overlay.png", "randy_czyz_words_overlay.png"],
     ["randy-czyz.pdf", "randy_czyz_words.pdf"],
     ["randy-czyz-vs-reference.png", "randy_czyz_vs_reference.png"],
+    ["randy-czyz-before-after.png", "randy_layout_before_after.png"],
     ["gods-fingerprint-reference.jpg", "gods_fingerprint_reference.jpg"],
   ];
   try {
     fs.mkdirSync(artifacts, { recursive: true });
-    for (const [from, to] of copies) fs.copyFileSync(path.join(out, from), path.join(artifacts, to));
+    for (const [from, to] of copies) {
+      const source = path.join(out, from);
+      if (fs.existsSync(source)) fs.copyFileSync(source, path.join(artifacts, to));
+    }
   } catch (error) {
     console.log(`artifact copy skipped: ${error instanceof Error ? error.message : "unavailable"}`);
   }

@@ -83,15 +83,18 @@ export function packBodyRuns(
   nameCursor: { i: number },
   verseCursor: { i: number },
   _ceiling: number,
+  once = false,
+  progress?: BodyProgress,
 ): PackedRun[] {
   const packed: PackedRun[] = [];
   const gapFor = (runIndex: number) => (typeof space === "number" ? space : space(runIndex));
   const versesAt = verses.map(verseWords).filter((words) => words.length);
-  let verseAt = verseCursor.i;
-  let verseWord = 0;
-  let namesSinceVerse = 0;
-  let owed = versesAt.length ? versesAt.length - (verseAt % versesAt.length) : 0;
-  const slotCount = names.map(() => 0);
+  const carried = progress && progress.slotCount.length === names.length ? progress : null;
+  let verseAt = carried ? carried.verseAt : verseCursor.i;
+  let verseWord = carried ? carried.verseWord : 0;
+  let namesSinceVerse = carried ? carried.namesSinceVerse : 0;
+  let owed = carried ? carried.owed : versesAt.length ? versesAt.length - (verseAt % versesAt.length) : 0;
+  const slotCount = carried ? carried.slotCount : names.map(() => 0);
 
   const cannotFitFrom = (token: string, from: number) => {
     for (let index = from; index < runs.length; index++) {
@@ -190,6 +193,12 @@ export function packBodyRuns(
 
   for (let runIndex = 0; runIndex < runs.length; runIndex++) {
     const points = runs[runIndex];
+    const namesDone = !names.length || slotCount.every((count) => count >= 1);
+    const versesDone = !versesAt.length || (owed <= 0 && verseWord === 0);
+    if (once && namesDone && versesDone) {
+      packed.push({ points, text: "" });
+      continue;
+    }
     const length = pathLength(points);
     const gap = gapFor(runIndex);
     let used = 2;
@@ -337,6 +346,13 @@ export function packBodyRuns(
     packed.push({ points, text });
   }
   verseCursor.i = verseAt;
+  if (progress) {
+    progress.verseAt = verseAt;
+    progress.verseWord = verseWord;
+    progress.owed = owed;
+    progress.slotCount = slotCount;
+    progress.namesSinceVerse = namesSinceVerse;
+  }
   return packed;
 }
 
@@ -392,7 +408,16 @@ export function uprightRuns(points: Pt[]): Pt[][] {
   return runs.filter((item) => pathLength(item) > 4);
 }
 
-export type PackedRun = { points: Pt[]; text: string };
+export type PackedRun = { points: Pt[]; text: string; line?: boolean };
+
+/** Shared across chain groups so names and verses are listed once before the stories. */
+export type BodyProgress = {
+  verseAt: number;
+  verseWord: number;
+  owed: number;
+  slotCount: number[];
+  namesSinceVerse: number;
+};
 
 /**
  * Fill each upright run with whole words. A word that does not fit is left for a later run
@@ -463,7 +488,7 @@ export type Plaque = {
   baselines: number[];
 };
 
-export type RidgeRole = "core" | "secondary" | "body";
+export type RidgeRole = "core" | "secondary" | "body" | "line";
 
 function medianDistance(points: Pt[], origin: Pt) {
   if (!points.length) return Infinity;
@@ -536,6 +561,15 @@ export function classifyRidges(ridges: { points: Pt[] }[], period: number): Ridg
   for (let i = 0; i < coreCount; i++) roles[ranked[i].index] = "core";
   for (let i = 0; i < secondaryCount; i++) roles[ranked[coreCount + i].index] = "secondary";
   return roles;
+}
+
+/** Lines for the core plaque, in reading order. */
+export function plaqueLinesOf(style: PrintStyle) {
+  const listed = (style.plaqueLines ?? []).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
+  if (listed.length) return listed;
+  return [style.centerName, style.centerDetail, style.secondaryName, style.secondaryDetail, style.marriage, style.marriageDate]
+    .map((line) => (line ?? "").replace(/\s+/g, " ").trim())
+    .filter(Boolean);
 }
 
 export function dedicationWords(style: PrintStyle, role: "core" | "secondary") {
@@ -713,6 +747,91 @@ function centerSlice(points: Pt[], textWidth: number) {
   return { points: pointsMid, head, tail };
 }
 
+function sentenceWords(paragraph: string) {
+  const sentences = paragraph.split(/(?<=[.!?])\s+/).map((sentence) => sentence.trim()).filter(Boolean);
+  return sentences.length ? sentences.map((sentence) => sentence.split(/\s+/).filter(Boolean)) : [paragraph.split(/\s+/).filter(Boolean)];
+}
+
+/**
+ * Lay each story across the ridges that follow the names and verses.
+ * A paragraph is used whole. A sentence stays on one ridge. A short sentence
+ * joins the next whole sentences until the line is long enough. A paragraph
+ * that cannot finish is left off, and the ridges that remain are thin lines.
+ */
+export function fillStories(
+  packed: PackedRun[],
+  stories: string[],
+  measure: (word: string, runIndex: number) => number,
+  gap: number,
+  cursor = { next: 0 },
+) {
+  let lastText = -1;
+  packed.forEach((run, index) => {
+    if (run.text) lastText = index;
+  });
+  const open = packed.map((run, index) => ({ run, index })).filter((item) => item.index > lastText && !item.run.text);
+  let at = 0;
+  const fits = (runIndex: number, words: string[]) => {
+    const length = pathLength(packed[runIndex].points);
+    let used = 2;
+    for (let i = 0; i < words.length; i++) {
+      used += (i ? gap : 0) + measure(words[i], runIndex);
+      if (used > length - 1.5) return false;
+    }
+    return words.length > 0;
+  };
+
+  while (cursor.next < stories.length && at < open.length) {
+    const sentences = sentenceWords(stories[cursor.next]).filter((words) => words.length);
+    const startAt = at;
+    const snapshot = open.map((item) => item.run.text);
+    let sentenceAt = 0;
+    let failed = false;
+    while (sentenceAt < sentences.length) {
+      const sentence = sentences[sentenceAt];
+      let host = -1;
+      for (let look = at; look < open.length; look++) {
+        if (fits(open[look].index, sentence)) {
+          host = look;
+          break;
+        }
+      }
+      if (host < 0) {
+        failed = true;
+        break;
+      }
+      at = host;
+      const words = [...sentence];
+      let take = 1;
+      while (sentenceAt + take < sentences.length) {
+        const trial = words.concat(sentences[sentenceAt + take]);
+        if (!fits(open[at].index, trial)) break;
+        words.push(...sentences[sentenceAt + take]);
+        take += 1;
+      }
+      if (words.length < MIN_BODY_WORDS) {
+        failed = true;
+        break;
+      }
+      open[at].run.text = words.join(" ");
+      sentenceAt += take;
+      at += 1;
+    }
+    if (failed || sentenceAt < sentences.length) {
+      open.forEach((item, index) => {
+        item.run.text = snapshot[index] ?? "";
+      });
+      at = startAt;
+      break;
+    }
+    cursor.next += 1;
+  }
+  for (const item of open.slice(at)) item.run.line = true;
+  for (let index = 0; index < packed.length; index++) {
+    if (!packed[index].text && index < lastText) packed[index].line = true;
+  }
+}
+
 /**
  * Each dedication is one phrase on one ridge: the name and date stay together.
  * Names and verses fill every other run, including the unused ends of a dedication ridge.
@@ -726,10 +845,12 @@ export function planPortrait(
   gap: number,
 ): PlannedRun[][] {
   const pairs: { role: "core" | "secondary"; phrase: string }[] = [];
+  const plaque = plaqueFor(ridges, style, period);
+  const usePlaque = Boolean(plaque);
   const corePhrase = [cleanLine(style.centerName), cleanLine(style.centerDetail)].filter(Boolean).join(" ");
   const secondaryPhrase = [cleanLine(style.secondaryName), cleanLine(style.secondaryDetail)].filter(Boolean).join(" ");
-  if (corePhrase) pairs.push({ role: "core", phrase: corePhrase });
-  if (secondaryPhrase) pairs.push({ role: "secondary", phrase: secondaryPhrase });
+  if (!usePlaque && corePhrase) pairs.push({ role: "core", phrase: corePhrase });
+  if (!usePlaque && secondaryPhrase) pairs.push({ role: "secondary", phrase: secondaryPhrase });
 
   const origin = printCore(ridges, period);
   const ranked = ridges
@@ -777,6 +898,12 @@ export function planPortrait(
 
   const plans: PlannedRun[][] = ridges.map(() => []);
   const slots: { ridge: number; points: Pt[] }[] = [];
+  const keep = (index: number, points: Pt[]) => {
+    const pieces = plaque ? outsidePlaque(points, plaque) : [points];
+    for (const piece of pieces) {
+      if (pathLength(piece) > period * 0.8) slots.push({ ridge: index, points: piece });
+    }
+  };
   ridges.forEach((ridge, index) => {
     const runs = uprightRuns(ridge.points);
     const marks = hosting.get(index) ?? [];
@@ -784,20 +911,23 @@ export function planPortrait(
     for (const mark of marks) {
       const slice = centerSlice(runs[mark.run], measure(mark.line, mark.role));
       if (!slice) {
-        slots.push({ ridge: index, points: runs[mark.run] });
+        keep(index, runs[mark.run]);
         continue;
       }
       plans[index].push({ points: slice.points, text: mark.line, role: mark.role, order: mark.role === "core" ? -2 : -1 });
-      if (pathLength(slice.head) > period * 0.8) slots.push({ ridge: index, points: slice.head });
-      if (pathLength(slice.tail) > period * 0.8) slots.push({ ridge: index, points: slice.tail });
+      if (pathLength(slice.head) > period * 0.8) keep(index, slice.head);
+      if (pathLength(slice.tail) > period * 0.8) keep(index, slice.tail);
     }
     runs.forEach((run, runIndex) => {
-      if (!marked.has(runIndex)) slots.push({ ridge: index, points: run });
+      if (!marked.has(runIndex)) keep(index, run);
     });
   });
 
   const source = bodySources(style.names, style.scriptures, lines);
-  const welded = weldPaths(slots, Math.max(period * 1.5, ridgePitch(period) * 0.85));
+  let welded = weldPaths(slots, Math.max(period * 1.5, ridgePitch(period) * 0.85));
+  if (plaque) {
+    welded = welded.flatMap((slot) => outsidePlaque(slot.points, plaque).map((points) => ({ points, ridge: slot.ridge })));
+  }
   const chained = chainPaths(welded, origin);
   const probe = ["Lord", "bless", "you", "and", "keep", "you", "and", "give"];
   const minLen = probe.reduce((sum, word, index) => sum + (index ? gap : 0) + measure(word, "body"), 0) + 6;
@@ -831,7 +961,19 @@ export function planPortrait(
   if (group.length) groups.push(group);
   const nameCursor = { i: 0 };
   const verseCursor = { i: 0 };
+  const stories = (style.stories ?? []).map((story) => story.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const storyCursor = { next: 0 };
+  const progress: BodyProgress | undefined = stories.length
+    ? { verseAt: 0, verseWord: 0, owed: source.verses.length, slotCount: source.names.map(() => 0), namesSinceVerse: 0 }
+    : undefined;
   let order = 0;
+  if (plaque) {
+    for (const slot of chained) {
+      const length = pathLength(slot.points);
+      if (length >= verseFloor || length < period * 1.2) continue;
+      plans[slot.ridge].push({ points: slot.points, text: "", role: "line", order: order++ });
+    }
+  }
   for (const bodySlots of groups) {
     if (!bodySlots.length) continue;
     const ceiling = bodySlots.reduce((max, slot) => Math.max(max, pathLength(slot.points)), 0);
@@ -844,62 +986,106 @@ export function planPortrait(
       nameCursor,
       verseCursor,
       ceiling,
+      stories.length > 0,
+      progress,
     );
+    if (stories.length) fillStories(packed, stories, (word, runIndex) => measure(word, "body"), gap, storyCursor);
     packed.forEach((run, index) => {
-      if (!run.text) return;
-      plans[bodySlots[index].ridge].push({ points: run.points, text: run.text, role: "body", order: order++ });
+      if (run.text) {
+        plans[bodySlots[index].ridge].push({ points: run.points, text: run.text, role: "body", order: order++ });
+        return;
+      }
+      if (run.line) plans[bodySlots[index].ridge].push({ points: run.points, text: "", role: "line", order: order++ });
     });
   }
   return plans;
 }
 
-/** A paper plaque in the core so the dedications stay readable without moving the surrounding ridges. */
-export function plaqueFor(ridges: { points: Pt[] }[], style: { centerName?: string; centerDetail?: string; secondaryName?: string; secondaryDetail?: string }, period: number): Plaque | null {
-  const lines: PlaqueLine[] = [];
-  const primary = style.centerName?.trim();
-  const primaryDetail = style.centerDetail?.trim();
-  const secondary = style.secondaryName?.trim();
-  const secondaryDetail = style.secondaryDetail?.trim();
-  if (primary) lines.push({ text: primary, fontSize: period * 2.55, emphasis: true });
-  if (primaryDetail) lines.push({ text: primaryDetail, fontSize: period * 1.35, emphasis: false });
-  if (secondary) lines.push({ text: secondary, fontSize: period * 1.9, emphasis: true });
-  if (secondaryDetail) lines.push({ text: secondaryDetail, fontSize: period * 1.15, emphasis: false });
-  if (!lines.length) return null;
-
-  let cx = 0;
-  let cy = 0;
-  let count = 0;
-  for (const ridge of ridges) {
-    for (const point of ridge.points) {
-      cx += point.x;
-      cy += point.y;
-      count += 1;
-    }
-  }
-  if (!count) return null;
-  cx /= count;
-  cy /= count;
-
-  const charRatio = 0.72;
+/** A small paper plaque on the core. Names are a little larger than the ridge type; dates stay close to that size. */
+export function plaqueFor(ridges: { points: Pt[] }[], style: PrintStyle, period: number): Plaque | null {
+  if (!style.plaque) return null;
+  const raw = plaqueLinesOf(style);
+  if (!raw.length || !ridges.length) return null;
+  const body = fontSizeFor(period, style.textScale || 1);
+  const lines: PlaqueLine[] = raw.map((text) => {
+    const emphasis = /[A-Za-z]/.test(text) && !/^\d/.test(text);
+    return { text, fontSize: body * (emphasis ? 1.16 : 1.05), emphasis };
+  });
+  const core = printCore(ridges, period);
+  const charRatio = 0.62;
   let maxW = 0;
   let block = 0;
   lines.forEach((line, index) => {
     maxW = Math.max(maxW, estimateWordWidth(line.text, line.fontSize, charRatio, 0));
-    block += line.fontSize * 1.05;
-    if (index === 1 && lines.length > 2) block += period * 0.85;
-    else if (index < lines.length - 1) block += period * 0.28;
+    block += line.fontSize * 1.15;
+    if (index < lines.length - 1) block += line.fontSize * 0.16;
   });
-  const rx = maxW / 2 + period * 1.15;
-  const ry = block / 2 + period * 0.95;
+  const rx = maxW / 2 + period * 0.85;
+  const ry = block / 2 + period * 0.5;
   const baselines: number[] = [];
-  let y = cy - block / 2;
+  let y = core.y - block / 2;
   lines.forEach((line, index) => {
-    baselines.push(y + line.fontSize * 0.78);
-    y += line.fontSize * 1.05;
-    if (index === 1 && lines.length > 2) y += period * 0.85;
-    else if (index < lines.length - 1) y += period * 0.28;
+    baselines.push(y + line.fontSize * 0.82);
+    y += line.fontSize * 1.15;
+    if (index < lines.length - 1) y += line.fontSize * 0.16;
   });
-  return { cx, cy, rx, ry, lines, baselines };
+  return { cx: core.x, cy: core.y, rx, ry, lines, baselines };
+}
+
+/** Pieces of a ridge that stay outside the plaque, so words do not run through the core. */
+export function outsidePlaque(points: Pt[], plaque: Plaque, pad = 1.5): Pt[][] {
+  const inside = (point: Pt) => inPlaque(point.x, point.y, plaque, pad);
+  const edge = (a: Pt, b: Pt) => {
+    let lo = 0;
+    let hi = 1;
+    const aIn = inside(a);
+    for (let step = 0; step < 14; step++) {
+      const mid = (lo + hi) / 2;
+      const point = { x: a.x + (b.x - a.x) * mid, y: a.y + (b.y - a.y) * mid };
+      if (inside(point) === aIn) lo = mid;
+      else hi = mid;
+    }
+    const t = (lo + hi) / 2;
+    return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+  };
+  const segments: Pt[][] = [];
+  let current: Pt[] = [];
+  const flush = () => {
+    if (current.length > 1 && pathLength(current) > 4) segments.push(current);
+    current = [];
+  };
+  for (let i = 0; i < points.length; i++) {
+    const point = points[i];
+    if (!inside(point)) {
+      if (i > 0 && inside(points[i - 1])) current.push(edge(points[i - 1], point));
+      current.push(point);
+      continue;
+    }
+    if (current.length && i > 0 && !inside(points[i - 1])) current.push(edge(points[i - 1], point));
+    flush();
+  }
+  flush();
+  return segments;
+}
+
+/** A thin filled ridge, with no stroke, for the runs the words do not reach. */
+export function ribbonPath(points: Pt[], width: number) {
+  if (points.length < 2 || width <= 0) return "";
+  const left: Pt[] = [];
+  const right: Pt[] = [];
+  for (let i = 0; i < points.length; i++) {
+    const prev = points[Math.max(0, i - 1)];
+    const next = points[Math.min(points.length - 1, i + 1)];
+    const dx = next.x - prev.x;
+    const dy = next.y - prev.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const ox = (-dy / len) * (width / 2);
+    const oy = (dx / len) * (width / 2);
+    left.push({ x: points[i].x + ox, y: points[i].y + oy });
+    right.push({ x: points[i].x - ox, y: points[i].y - oy });
+  }
+  const ring = [...left, ...right.reverse()];
+  return `M ${ring.map((point) => `${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" L ")} Z`;
 }
 
 export function inPlaque(x: number, y: number, plaque: Plaque, pad = 0) {

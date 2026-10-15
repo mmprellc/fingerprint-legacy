@@ -1,3 +1,4 @@
+import { RANDY_CZYZ_STORIES } from "../fixtures/randy-czyz-stories";
 import { DEFAULT_FONT, DEFAULT_PRESET, type PrintStyle } from "./fingerprint/types";
 
 /** Spelled exactly as given, including the repeated names. */
@@ -44,15 +45,22 @@ export const randyCzyzStyle: PrintStyle = {
   font: DEFAULT_FONT,
   preset: DEFAULT_PRESET,
   textScale: 1,
-  title: "Randy Czyz Fingerprint Legacy",
+  title: "",
   script: "",
-  footer: "Randy Czyz — 4.20.1955",
+  footer: "",
+  headerName: "Randy S. Czyz",
+  headerDates: "04.20.1955 – 04.20.2026",
+  signature: "Fingerprint Legacy",
+  plaque: true,
   centerName: "Randy Czyz",
   centerDetail: "4.20.1955",
   secondaryName: "Maryanne Czyz",
   secondaryDetail: "10.17.1955",
+  marriage: "Married",
+  marriageDate: "11.16.1973",
   names: RANDY_CZYZ_NAMES,
   scriptures: RANDY_CZYZ_SCRIPTURES,
+  ...(RANDY_CZYZ_STORIES.length ? { stories: RANDY_CZYZ_STORIES } : {}),
 };
 
 export type StudioPiece = {

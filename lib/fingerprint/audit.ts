@@ -1,5 +1,5 @@
 import { loadRidgeFace, ridgeCaseReport } from "./glyphs";
-import { CAP_RATIO, edgeTypeScale, fontSizeFor, MIN_BODY_WORDS, ridgePitch, RIDGE_DIVIDER, roleScale, type RidgeRole } from "./lettering";
+import { CAP_RATIO, edgeTypeScale, fontSizeFor, MIN_BODY_WORDS, plaqueLinesOf, ridgePitch, RIDGE_DIVIDER, roleScale, type RidgeRole } from "./lettering";
 import { fontById } from "./preview";
 import type { PrintStyle, Pt } from "./types";
 
@@ -59,25 +59,36 @@ export function auditLayout(svg: string, style: PrintStyle, period: number): Che
     detail: `Cap height is ${cap.toFixed(1)}px at this ridge spacing.`,
   });
 
-  const dedications: { id: string; label: string; text: string }[] = [
-    { id: "dedication-core", label: "Core dedication", text: phrase(style.centerName, style.centerDetail) },
-    { id: "dedication-secondary", label: "Secondary dedication", text: phrase(style.secondaryName, style.secondaryDetail) },
-  ];
-  for (const item of dedications) {
-    if (!item.text) continue;
-    const count = countOf(svg, item.text);
+  const plaqueLines = style.plaque ? plaqueLinesOf(style) : [];
+  if (plaqueLines.length) {
+    const missing = plaqueLines.filter((line) => countOf(svg, line) < 1);
     checks.push({
-      id: item.id,
-      label: item.label,
-      passed: count === 1,
-      detail: count === 1 ? `${item.text} sits together once.` : `${item.text} appears ${count} times.`,
+      id: "dedication-core",
+      label: "Core plaque",
+      passed: missing.length === 0,
+      detail: missing.length ? `The plaque is missing ${missing.slice(0, 3).join(", ")}.` : "The plaque holds the center lines.",
     });
+  } else {
+    const dedications: { id: string; label: string; text: string }[] = [
+      { id: "dedication-core", label: "Core dedication", text: phrase(style.centerName, style.centerDetail) },
+      { id: "dedication-secondary", label: "Secondary dedication", text: phrase(style.secondaryName, style.secondaryDetail) },
+    ];
+    for (const item of dedications) {
+      if (!item.text) continue;
+      const count = countOf(svg, item.text);
+      checks.push({
+        id: item.id,
+        label: item.label,
+        passed: count === 1,
+        detail: count === 1 ? `${item.text} sits together once.` : `${item.text} appears ${count} times.`,
+      });
+    }
   }
 
   const scriptures = (style.scriptures ?? []).map((verse) => verse.replace(/\s+/g, " ").trim()).filter(Boolean);
   const names = (style.names ?? []).map((name) => name.replace(/\s+/g, " ").trim()).filter(Boolean);
   if (scriptures.length) {
-    const verdict = versesInOrder(bodyRunTexts(svg), scriptures, names);
+    const verdict = versesInOrder(bodyRunTexts(svg), scriptures, names, style.stories ?? []);
     checks.push({
       id: "verses",
       label: "Whole verses",
@@ -109,7 +120,7 @@ export function auditLayout(svg: string, style: PrintStyle, period: number): Che
   checks.push(noFillers(svg));
   const body = bodyRuns(svg);
   checks.push(minSegment(body.map((run) => run.text), scriptures));
-  if (scriptures.length) checks.push(verseContinuity(body, scriptures, names, period));
+  if (scriptures.length) checks.push(verseContinuity(body, scriptures, names, period, style.stories ?? []));
   return checks;
 }
 
@@ -178,8 +189,12 @@ function sourceCase(svg: string, style: PrintStyle): Check {
   const folded = new Map<string, Set<string>>();
   for (const verse of style.scriptures ?? []) addTokens(exact, folded, verse);
   for (const name of style.names ?? []) addTokens(exact, folded, name);
+  for (const story of style.stories ?? []) addTokens(exact, folded, story);
+  for (const line of plaqueLinesOf(style)) addTokens(exact, folded, line);
   addTokens(exact, folded, phrase(style.centerName, style.centerDetail));
   addTokens(exact, folded, phrase(style.secondaryName, style.secondaryDetail));
+  addTokens(exact, folded, style.marriage ?? "");
+  addTokens(exact, folded, style.marriageDate ?? "");
 
   for (const word of ridgeWords(svg)) {
     if (word === RIDGE_DIVIDER || exact.has(word)) continue;
@@ -339,11 +354,12 @@ function endGap(a: BodyRun, b: BodyRun) {
  * Each verse stays whole, and the ridges that carry it are neighbors.
  * A phrase that jumps across the oval fails even if the words are in order.
  */
-function verseContinuity(runs: BodyRun[], scriptures: string[], names: string[], period: number): Check {
+function verseContinuity(runs: BodyRun[], scriptures: string[], names: string[], period: number, stories: string[] = []): Check {
   const order = versesInOrder(
     runs.map((run) => run.text),
     scriptures,
     names,
+    stories,
   );
   if (!order.ok) return { id: "verse-continuity", label: "Verse continuity", passed: false, detail: order.detail };
 
@@ -407,12 +423,13 @@ function wordsOfText(text: string) {
  * opening quote through the reference, repeating in the listed order.
  * A name between the words, or a start in the middle of a verse, fails.
  */
-function versesInOrder(runs: string[], scriptures: string[], names: string[]) {
+function versesInOrder(runs: string[], scriptures: string[], names: string[], stories: string[] = []) {
   const verses = scriptures.map((verse) => verse.split(/\s+/).filter(Boolean));
   const nameSeqs = names
     .map((name) => name.split(/\s+/).filter(Boolean))
     .filter((words) => words.length)
     .sort((a, b) => b.length - a.length);
+  const storyWords = new Set(stories.flatMap((story) => story.split(/\s+/).filter(Boolean)));
   const words = runs.flatMap(wordsOfText);
   if (!words.length) return { ok: false, detail: "No verse text was placed on the ridges." };
 
@@ -435,6 +452,10 @@ function versesInOrder(runs: string[], scriptures: string[], names: string[]) {
     const name = nameSeqs.find((seq) => matchesAt(index, seq));
     if (name) {
       index += name.length;
+      continue;
+    }
+    if (finished.length >= verses.length && storyWords.has(words[index])) {
+      index += 1;
       continue;
     }
     if (words[index] === expected[0]) {

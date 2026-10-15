@@ -81,22 +81,37 @@ export type PrintStyle = {
   font: RidgeFontId;
   preset: string;
   textScale: number;
-  /** Piece title, set above the portrait. */
+  /** Legacy piece title. Unused when `headerName` is set. */
   title: string;
-  /** Legacy script accent. Used as the footer when `footer` is empty. */
+  /** Legacy script accent. Used as the footer when `footer` is empty and there is no signature. */
   script: string;
   /** Line under the portrait. */
   footer?: string;
-  /** Primary dedication, set along the innermost core ridges. */
+  /** Person's name, larger and bold, above the portrait. */
+  headerName?: string;
+  /** Birth and death, under the header name. */
+  headerDates?: string;
+  /** Small script signature, bottom right. */
+  signature?: string;
+  /** Blank a plaque in the core instead of setting the dedications on ridges. */
+  plaque?: boolean;
+  /** Plaque lines, in order. When empty, the center, marriage, and secondary fields are used. */
+  plaqueLines?: string[];
+  /** Primary dedication. On the core ridges, or the first plaque lines. */
   centerName?: string;
   centerDetail?: string;
-  /** Second dedication, on the next ridge out, same size as the names. */
+  /** Second dedication, on the next ridge out, or the next plaque lines. */
   secondaryName?: string;
   secondaryDetail?: string;
-  /** Names repeated along the ridges, one phrase each. Spelled as given. */
+  /** Marriage line on the plaque, under the two names. */
+  marriage?: string;
+  marriageDate?: string;
+  /** Names along the ridges, one phrase each. Spelled as given. */
   names?: string[];
   /** Whole verses, in order. A long verse continues onto the next ridges. */
   scriptures?: string[];
+  /** Whole paragraphs placed after the names and verses. A paragraph that does not fit is left off. */
+  stories?: string[];
 };
 
 export const FONTS: { id: RidgeFontId; label: string; file: string; family: string; charRatio: number; capEm: number }[] = [

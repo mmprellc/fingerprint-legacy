@@ -111,7 +111,7 @@ export function StudioClient({
         ? { centerName: initialOccasion.honoree, names: initialOccasion.lines, footer: initialOccasion.script }
         : sampleLettering
           ? studioRidgeStyle
-          : {}),
+          : { signature: "Fingerprint Legacy", plaque: true, script: "" }),
     },
   );
   const [productId, setProductId] = useState(initialProduct);
@@ -638,11 +638,16 @@ export function StudioClient({
         )}
 
         <h2>Their words</h2>
-        <label className="field"><span>Title above the portrait</span><input type="text" value={style.title} onChange={(event) => setStyle({ ...style, title: event.target.value })} /></label>
-        <label className="field"><span>Center dedication, on the innermost ridges</span><input type="text" value={style.centerName ?? ""} aria-label="Center name" onChange={(event) => setStyle({ ...style, centerName: event.target.value })} /></label>
-        <label className="field"><span>With the center dedication</span><input type="text" value={style.centerDetail ?? ""} aria-label="Center date or detail" onChange={(event) => setStyle({ ...style, centerDetail: event.target.value })} /></label>
-        <label className="field"><span>Secondary dedication, on the next ridges</span><input type="text" value={style.secondaryName ?? ""} aria-label="Secondary name" onChange={(event) => setStyle({ ...style, secondaryName: event.target.value })} /></label>
-        <label className="field"><span>With the secondary dedication</span><input type="text" value={style.secondaryDetail ?? ""} aria-label="Secondary date or detail" onChange={(event) => setStyle({ ...style, secondaryDetail: event.target.value })} /></label>
+        <label className="field"><span>Name above the portrait</span><input type="text" value={style.headerName ?? ""} aria-label="Header name" onChange={(event) => setStyle({ ...style, headerName: event.target.value })} /></label>
+        <label className="field"><span>Birth and death, under the name</span><input type="text" value={style.headerDates ?? ""} aria-label="Header dates" onChange={(event) => setStyle({ ...style, headerDates: event.target.value })} /></label>
+        <label className="field"><span>Signature, bottom right</span><input type="text" value={style.signature ?? ""} aria-label="Signature" onChange={(event) => setStyle({ ...style, signature: event.target.value })} /></label>
+        <label className="check"><input type="checkbox" checked={Boolean(style.plaque)} onChange={(event) => setStyle({ ...style, plaque: event.target.checked })} /> Center plaque for the dedications</label>
+        <label className="field"><span>First name on the plaque</span><input type="text" value={style.centerName ?? ""} aria-label="Center name" onChange={(event) => setStyle({ ...style, centerName: event.target.value })} /></label>
+        <label className="field"><span>Date under that name</span><input type="text" value={style.centerDetail ?? ""} aria-label="Center date or detail" onChange={(event) => setStyle({ ...style, centerDetail: event.target.value })} /></label>
+        <label className="field"><span>Second name on the plaque</span><input type="text" value={style.secondaryName ?? ""} aria-label="Secondary name" onChange={(event) => setStyle({ ...style, secondaryName: event.target.value })} /></label>
+        <label className="field"><span>Date under that name</span><input type="text" value={style.secondaryDetail ?? ""} aria-label="Secondary date or detail" onChange={(event) => setStyle({ ...style, secondaryDetail: event.target.value })} /></label>
+        <label className="field"><span>Marriage line</span><input type="text" value={style.marriage ?? ""} aria-label="Marriage line" onChange={(event) => setStyle({ ...style, marriage: event.target.value })} /></label>
+        <label className="field"><span>Marriage date</span><input type="text" value={style.marriageDate ?? ""} aria-label="Marriage date" onChange={(event) => setStyle({ ...style, marriageDate: event.target.value })} /></label>
         <label className="field">
           <span>Names along the ridges, one per line</span>
           <textarea className="names" value={(style.names ?? []).join("\n")} onChange={(event) => setStyle({ ...style, names: event.target.value.split("\n") })} />
@@ -651,9 +656,14 @@ export function StudioClient({
           <span>Scriptures, one verse per line</span>
           <textarea className="verses" value={(style.scriptures ?? []).join("\n")} onChange={(event) => setStyle({ ...style, scriptures: event.target.value.split("\n") })} />
         </label>
-        <p className="note">Every ridge is text, in one small size, packed in even rows that follow the print. Verses run whole along consecutive ridges and end with their reference. Names stay whole. The two dedications follow the innermost ridges in that same size. A line shorter than a full phrase is left off.</p>
-        <label className="field"><span>Line under the portrait</span><input type="text" value={style.footer ?? ""} onChange={(event) => setStyle({ ...style, footer: event.target.value })} /></label>
-        <label className="field"><span>Script line, if the footer is empty</span><input type="text" value={style.script} onChange={(event) => setStyle({ ...style, script: event.target.value })} /></label>
+        <label className="field">
+          <span>Family stories, one paragraph per block. A paragraph is used whole.</span>
+          <textarea className="verses" aria-label="Family stories" value={(style.stories ?? []).join("\n\n")} onChange={(event) => setStyle({ ...style, stories: event.target.value.split(/\n\s*\n/).map((story) => story.trim()).filter(Boolean) })} />
+        </label>
+        <p className="note">Every ridge is text, in one size, packed in even rows that follow the print. Verses run whole and end with their reference. Names stay whole. The center plaque holds the dedications. Stories continue as whole paragraphs, then thin ridges. A sentence is never cut.</p>
+        <label className="field"><span>Title, used when the name above is empty</span><input type="text" value={style.title} onChange={(event) => setStyle({ ...style, title: event.target.value })} /></label>
+        <label className="field"><span>Line under the portrait, used when the signature is empty</span><input type="text" value={style.footer ?? ""} onChange={(event) => setStyle({ ...style, footer: event.target.value })} /></label>
+        <label className="field"><span>Script line, if the footer and signature are empty</span><input type="text" value={style.script} onChange={(event) => setStyle({ ...style, script: event.target.value })} /></label>
         <details open={linesOpen} onToggle={(event) => setLinesOpen(event.currentTarget.open)}>
           <summary>Short lines, when the name list is empty</summary>
           {prints.map((print, slot) => (
