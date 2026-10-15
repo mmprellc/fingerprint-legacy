@@ -1,9 +1,14 @@
 /**
  * Randy's family stories, in reading order.
- * Each entry is one complete paragraph, including its title.
- * A paragraph is set whole along the ridges or left off. It is never cut mid-sentence.
- *
- * The family document is "Randy S. Czyz Fingerprint.docx".
- * Paste those paragraphs here, unchanged, when the file is on disk.
+ * Each entry is the title and its paragraph, unchanged.
+ * A paragraph is set whole along the ridges. A sentence may continue
+ * onto the next ridge, and it is never left unfinished.
  */
-export const RANDY_CZYZ_STORIES: string[] = [];
+export const RANDY_CZYZ_STORIES: string[] = [
+  "A Lifetime of Ministry: Randy and Mary Anne’s ministry spanned over 40 years, leading people to Jesus across multiple continents and impacting thousands of lives for the Kingdom of God.",
+  "Marriage and Family (1973): On November 16, 1973, Randy and Mary Anne were married in Phoenix, New York. Together, they began their family and were blessed with four children: Jeremy, Jacob, Thomas, and Michelle. Their family continued to grow, and today they have 15 grandchildren and one great-grandchild.",
+  "Word of Life Assembly of God (1992): In 1992, Pastor Randy and Mary Anne were called back to Baldwinsville Assembly of God. Pastor Randy assumed the role of Senior Pastor, and together they renamed the church Word of Life Assembly of God.",
+  "Making Your Dash Count: Pastor Randy created a powerful sermon titled “Make Your Dash Count,” reminding us that the dash between our birth and death represents the time God has given us on this earth. He believed that God gives each of us a window of opportunity to fulfill His purpose by loving others, making a difference, and sharing the love of Jesus. He preached this powerful message at hundreds of funerals, touching countless hearts, changing lives, and leading people to the Lord. His message was simple but profound: It’s not how long we live, but what we do with the time God gives us that truly matters.",
+  "A Legacy of Love, Faith, and Family: Randy and Mary Anne’s marriage was a beautiful example of unwavering love, commitment, and dedication, built on a foundation of faith and a deep relationship with the Lord. Together, they devoted their lives to serving God, loving their family, strengthening their church, and making a difference in the world. Through their love for one another, their faithfulness to God, and their selfless dedication to others, they became extraordinary role models for their children, grandchildren, great-grandchildren, and countless others whose lives they touched. Their legacy of faith, love, and service will continue to inspire generations to come.",
+  "Bringing Hope to Ground Zero After 9/11: Following the devastating attacks of September 11, 2001, Pastor Randy traveled to Ground Zero in New York City to pray, comfort, and minister to those suffering during one of our nation’s darkest hours. For the next year, he traveled back and forth to New York City, bringing hope, compassion, and the love of Jesus to a broken and grieving nation. Through his unwavering faith and selfless dedication, he touched countless lives, reminding people that even in the midst of unimaginable tragedy, God’s love and presence never fade.",
+];

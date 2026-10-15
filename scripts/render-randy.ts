@@ -62,6 +62,16 @@ async function main() {
   for (const phrase of ["Isaiah", "41:10", "73:26", "119:105", "6:24–26", "Numbers", "Randy S. Czyz", "04.20.1955 – 04.20.2026", "Fingerprint Legacy", "Randy Czyz", "4.20.1955", "Maryanne Czyz", "10.17.1955", "Married", "11.16.1973", "righteous", "lamp"]) {
     assertIncludes(preview.svg, phrase, "phrase");
   }
+  for (const phrase of [
+    "spanned over 40 years",
+    "Phoenix, New York",
+    "renamed the church Word of Life",
+    "Make Your Dash Count",
+    "unwavering love, commitment",
+    "Ground Zero in New York City",
+  ]) {
+    assertIncludes(preview.svg, phrase, "story");
+  }
   if (preview.svg.includes("RANDY CZYZ FINGERPRINT LEGACY")) throw new Error("The old title is still on the portrait");
   if (!preview.svg.includes('class="plaque"')) throw new Error("The center plaque is missing");
 
@@ -95,7 +105,7 @@ async function main() {
     const pairLabel = 56;
     const pairW = beforeW + afterW + pairGap * 3;
     const pairH = full.height + pairLabel + pairGap;
-    const pair = `<svg xmlns="http://www.w3.org/2000/svg" width="${pairW}" height="${pairH}"><rect width="100%" height="100%" fill="#FFFFFF"/><text x="${pairGap}" y="36" font-family="Georgia" font-size="22" fill="#111111">Previous</text><text x="${beforeW + pairGap * 2}" y="36" font-family="Georgia" font-size="22" fill="#111111">Name, plaque, signature</text></svg>`;
+    const pair = `<svg xmlns="http://www.w3.org/2000/svg" width="${pairW}" height="${pairH}"><rect width="100%" height="100%" fill="#FFFFFF"/><text x="${pairGap}" y="36" font-family="Georgia" font-size="22" fill="#111111">Previous</text><text x="${beforeW + pairGap * 2}" y="36" font-family="Georgia" font-size="22" fill="#111111">With the family stories</text></svg>`;
     await sharp(Buffer.from(pair))
       .composite([
         { input: before, left: pairGap, top: pairLabel },

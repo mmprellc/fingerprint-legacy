@@ -754,9 +754,10 @@ function sentenceWords(paragraph: string) {
 
 /**
  * Lay each story across the ridges that follow the names and verses.
- * A paragraph is used whole. A sentence stays on one ridge. A short sentence
- * joins the next whole sentences until the line is long enough. A paragraph
- * that cannot finish is left off, and the ridges that remain are thin lines.
+ * A paragraph is used whole. A sentence may continue onto the next ridge in
+ * pieces of at least eight words, and it is never left unfinished. A short
+ * sentence joins the next whole sentences until the line is long enough.
+ * A paragraph that cannot finish is left off, and the ridges that remain are thin lines.
  */
 export function fillStories(
   packed: PackedRun[],
@@ -781,45 +782,90 @@ export function fillStories(
     return words.length > 0;
   };
 
+  const wordsThatFit = (runIndex: number, words: string[], from: number) => {
+    let count = 0;
+    while (from + count < words.length && fits(runIndex, words.slice(from, from + count + 1))) count += 1;
+    return count;
+  };
+  // A sentence may cross ridges. Each piece stays at least eight words, and the sentence is finished.
+  const legalChunk = (runIndex: number, words: string[], from: number) => {
+    const remain = words.length - from;
+    if (remain < MIN_BODY_WORDS) return 0;
+    const fit = wordsThatFit(runIndex, words, from);
+    if (fit >= remain) return remain;
+    let take = fit;
+    if (remain - take < MIN_BODY_WORDS) take = remain - MIN_BODY_WORDS;
+    if (take < MIN_BODY_WORDS || take > fit) return 0;
+    return take;
+  };
+
   while (cursor.next < stories.length && at < open.length) {
     const sentences = sentenceWords(stories[cursor.next]).filter((words) => words.length);
     const startAt = at;
-    const snapshot = open.map((item) => item.run.text);
+    const snapshot = open.map((item) => ({ text: item.run.text, line: Boolean(item.run.line) }));
     let sentenceAt = 0;
+    let wordAt = 0;
     let failed = false;
+    const markGap = (until: number) => {
+      for (let index = at; index < until; index++) open[index].run.line = true;
+    };
     while (sentenceAt < sentences.length) {
-      const sentence = sentences[sentenceAt];
-      let host = -1;
-      for (let look = at; look < open.length; look++) {
-        if (fits(open[look].index, sentence)) {
-          host = look;
+      let placed = false;
+      if (wordAt === 0) {
+        for (let look = at; look < open.length; look++) {
+          const runIndex = open[look].index;
+          const words: string[] = [];
+          let take = 0;
+          while (sentenceAt + take < sentences.length) {
+            const trial = words.concat(sentences[sentenceAt + take]);
+            if (!fits(runIndex, trial)) break;
+            words.push(...sentences[sentenceAt + take]);
+            take += 1;
+          }
+          if (words.length >= MIN_BODY_WORDS) {
+            markGap(look);
+            open[look].run.text = words.join(" ");
+            at = look + 1;
+            sentenceAt += take;
+            placed = true;
+            break;
+          }
+          const sentence = sentences[sentenceAt];
+          const count = legalChunk(runIndex, sentence, 0);
+          if (!count || count >= sentence.length) continue;
+          markGap(look);
+          open[look].run.text = sentence.slice(0, count).join(" ");
+          wordAt = count;
+          at = look + 1;
+          placed = true;
+          break;
+        }
+      } else {
+        const sentence = sentences[sentenceAt];
+        for (let look = at; look < open.length; look++) {
+          const count = legalChunk(open[look].index, sentence, wordAt);
+          if (!count) continue;
+          markGap(look);
+          open[look].run.text = sentence.slice(wordAt, wordAt + count).join(" ");
+          wordAt += count;
+          at = look + 1;
+          if (wordAt >= sentence.length) {
+            wordAt = 0;
+            sentenceAt += 1;
+          }
+          placed = true;
           break;
         }
       }
-      if (host < 0) {
+      if (!placed) {
         failed = true;
         break;
       }
-      at = host;
-      const words = [...sentence];
-      let take = 1;
-      while (sentenceAt + take < sentences.length) {
-        const trial = words.concat(sentences[sentenceAt + take]);
-        if (!fits(open[at].index, trial)) break;
-        words.push(...sentences[sentenceAt + take]);
-        take += 1;
-      }
-      if (words.length < MIN_BODY_WORDS) {
-        failed = true;
-        break;
-      }
-      open[at].run.text = words.join(" ");
-      sentenceAt += take;
-      at += 1;
     }
-    if (failed || sentenceAt < sentences.length) {
+    if (failed || sentenceAt < sentences.length || wordAt !== 0) {
       open.forEach((item, index) => {
-        item.run.text = snapshot[index] ?? "";
+        item.run.text = snapshot[index]?.text ?? "";
+        item.run.line = snapshot[index]?.line ?? false;
       });
       at = startAt;
       break;
