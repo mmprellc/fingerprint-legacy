@@ -1,4 +1,4 @@
-import { pathLength, pointAtLength, slicePath } from "./geometry";
+import { countCrossings, pathLength, pointAtLength, slicePath } from "./geometry";
 import type { PrintStyle, Pt } from "./types";
 
 /** Ink thickness as a fraction of the ridge period. Valleys stay open at this width. */
@@ -757,7 +757,7 @@ function sentenceWords(paragraph: string) {
  * A paragraph is used whole. A sentence may continue onto the next ridge in
  * pieces of at least eight words, and it is never left unfinished. A short
  * sentence joins the next whole sentences until the line is long enough.
- * A paragraph that cannot finish is left off, and the ridges that remain are thin lines.
+ * A paragraph that cannot finish is left off. Thin lines are drawn only after every story is placed.
  */
 export function fillStories(
   packed: PackedRun[],
@@ -806,9 +806,6 @@ export function fillStories(
     let sentenceAt = 0;
     let wordAt = 0;
     let failed = false;
-    const markGap = (until: number) => {
-      for (let index = at; index < until; index++) open[index].run.line = true;
-    };
     while (sentenceAt < sentences.length) {
       let placed = false;
       if (wordAt === 0) {
@@ -823,7 +820,6 @@ export function fillStories(
             take += 1;
           }
           if (words.length >= MIN_BODY_WORDS) {
-            markGap(look);
             open[look].run.text = words.join(" ");
             at = look + 1;
             sentenceAt += take;
@@ -833,7 +829,6 @@ export function fillStories(
           const sentence = sentences[sentenceAt];
           const count = legalChunk(runIndex, sentence, 0);
           if (!count || count >= sentence.length) continue;
-          markGap(look);
           open[look].run.text = sentence.slice(0, count).join(" ");
           wordAt = count;
           at = look + 1;
@@ -845,7 +840,6 @@ export function fillStories(
         for (let look = at; look < open.length; look++) {
           const count = legalChunk(open[look].index, sentence, wordAt);
           if (!count) continue;
-          markGap(look);
           open[look].run.text = sentence.slice(wordAt, wordAt + count).join(" ");
           wordAt += count;
           at = look + 1;
@@ -871,10 +865,6 @@ export function fillStories(
       break;
     }
     cursor.next += 1;
-  }
-  for (const item of open.slice(at)) item.run.line = true;
-  for (let index = 0; index < packed.length; index++) {
-    if (!packed[index].text && index < lastText) packed[index].line = true;
   }
 }
 
@@ -944,8 +934,9 @@ export function planPortrait(
 
   const plans: PlannedRun[][] = ridges.map(() => []);
   const slots: { ridge: number; points: Pt[] }[] = [];
+  const clearance = plaque ? plaqueClearance(period, style.textScale || 1) : 0;
   const keep = (index: number, points: Pt[]) => {
-    const pieces = plaque ? outsidePlaque(points, plaque) : [points];
+    const pieces = plaque ? outsidePlaque(points, plaque, clearance) : [points];
     for (const piece of pieces) {
       if (pathLength(piece) > period * 0.8) slots.push({ ridge: index, points: piece });
     }
@@ -972,7 +963,7 @@ export function planPortrait(
   const source = bodySources(style.names, style.scriptures, lines);
   let welded = weldPaths(slots, Math.max(period * 1.5, ridgePitch(period) * 0.85));
   if (plaque) {
-    welded = welded.flatMap((slot) => outsidePlaque(slot.points, plaque).map((points) => ({ points, ridge: slot.ridge })));
+    welded = welded.flatMap((slot) => outsidePlaque(slot.points, plaque, clearance).map((points) => ({ points, ridge: slot.ridge })));
   }
   const chained = chainPaths(welded, origin);
   const probe = ["Lord", "bless", "you", "and", "keep", "you", "and", "give"];
@@ -987,9 +978,25 @@ export function planPortrait(
   }, minLen);
   const neighborLimit = Math.max(36, ridgePitch(period) * 3.2);
   const readable = chained.filter((slot) => pathLength(slot.points) >= verseFloor);
+  const minSep = ridgePitch(period) * 0.8;
+  // Only the real pile-ups are cut. Ridges that already clear the 0.8-pitch floor stay whole.
+  const tangle = ridgePitch(period) * 0.55;
+  const separated: LoosePath[] = [];
+  const separatedSamples: Pt[] = [];
+  for (const slot of readable) {
+    for (const piece of trimAgainst(slot.points, separatedSamples, tangle, verseFloor)) {
+      if (crossesKept(piece, separated.map((item) => item.points))) continue;
+      separated.push({ points: piece, ridge: slot.ridge });
+      separatedSamples.push(...interiorSamples(piece));
+    }
+  }
+  const remnants = chained.filter((slot) => {
+    const length = pathLength(slot.points);
+    return length >= period * 1.2 && length < verseFloor;
+  });
   const groups: LoosePath[][] = [];
   let group: LoosePath[] = [];
-  for (const item of readable) {
+  for (const item of separated) {
     if (group.length) {
       const prev = group[group.length - 1].points;
       const next = item.points;
@@ -1013,13 +1020,7 @@ export function planPortrait(
     ? { verseAt: 0, verseWord: 0, owed: source.verses.length, slotCount: source.names.map(() => 0), namesSinceVerse: 0 }
     : undefined;
   let order = 0;
-  if (plaque) {
-    for (const slot of chained) {
-      const length = pathLength(slot.points);
-      if (length >= verseFloor || length < period * 1.2) continue;
-      plans[slot.ridge].push({ points: slot.points, text: "", role: "line", order: order++ });
-    }
-  }
+  const placed: { ridge: number; points: Pt[]; text: string }[] = [];
   for (const bodySlots of groups) {
     if (!bodySlots.length) continue;
     const ceiling = bodySlots.reduce((max, slot) => Math.max(max, pathLength(slot.points)), 0);
@@ -1037,43 +1038,193 @@ export function planPortrait(
     );
     if (stories.length) fillStories(packed, stories, (word, runIndex) => measure(word, "body"), gap, storyCursor);
     packed.forEach((run, index) => {
-      if (run.text) {
-        plans[bodySlots[index].ridge].push({ points: run.points, text: run.text, role: "body", order: order++ });
-        return;
-      }
-      if (run.line) plans[bodySlots[index].ridge].push({ points: run.points, text: "", role: "line", order: order++ });
+      placed.push({ ridge: bodySlots[index].ridge, points: run.points, text: run.text });
     });
+  }
+  const kept: Pt[][] = [];
+  const keptSamples: Pt[] = [];
+  const remember = (points: Pt[]) => {
+    kept.push(points);
+    keptSamples.push(...interiorSamples(points));
+  };
+  const tails: { ridge: number; points: Pt[] }[] = [];
+  for (const run of placed) {
+    if (!run.text) continue;
+    const length = pathLength(run.points);
+    const words = run.text.split(/\s+/).filter(Boolean);
+    let used = 2;
+    words.forEach((word, index) => {
+      used += (index ? gap : 0) + measure(word, "body");
+    });
+    const head = used >= length * 0.82 ? run.points : slicePath(run.points, 0, Math.min(length, used));
+    plans[run.ridge].push({ points: run.points, text: run.text, role: "body", order: order++ });
+    remember(head.length > 1 ? head : run.points);
+    if (used < length - period * 2.4) {
+      const tail = slicePath(run.points, Math.min(length, used + 2), length);
+      if (pathLength(tail) >= period * 2.4) tails.push({ ridge: run.ridge, points: tail });
+    }
+  }
+  const storiesDone = stories.length > 0 && storyCursor.next >= stories.length;
+  if (storiesDone || (stories.length === 0 && plaque)) {
+    if (storiesDone) {
+      for (const tail of tails) {
+        if (crossesKept(tail.points, kept)) continue;
+        plans[tail.ridge].push({ points: tail.points, text: "", role: "line", order: order++ });
+        remember(tail.points);
+      }
+    }
+    const leftovers = [
+      ...(storiesDone ? placed.filter((run) => !run.text).map((run) => ({ ridge: run.ridge, points: run.points, length: pathLength(run.points) })) : []),
+      ...remnants.map((slot) => ({ ridge: slot.ridge, points: slot.points, length: pathLength(slot.points) })),
+    ].sort((a, b) => b.length - a.length);
+    const lineGap = tangle;
+    const lineKeep = period * 2.4;
+    for (const slot of leftovers) {
+      for (const piece of trimAgainst(slot.points, keptSamples, lineGap, lineKeep)) {
+        for (const part of trimAgainst(piece, keptSamples, lineGap, lineKeep)) {
+          if (crossesKept(part, kept)) continue;
+          plans[slot.ridge].push({ points: part, text: "", role: "line", order: order++ });
+          remember(part);
+        }
+      }
+    }
   }
   return plans;
 }
 
-/** A small paper plaque on the core. Names are a little larger than the ridge type; dates stay close to that size. */
+/** How far a ridge centerline stays outside the plaque, so the letters clear the opening. */
+export function plaqueClearance(period: number, textScale = 1) {
+  const body = fontSizeFor(period, textScale);
+  return Math.max(period * 0.85, body * 1.05);
+}
+
+/** Width of a leftover ridge. It matches the stem of the body type, and it is never a heavy stroke. */
+export function fallbackWidth(period: number, textScale = 1) {
+  const body = fontSizeFor(period, textScale);
+  return Math.max(0.9, body * 0.085);
+}
+
+function interiorSamples(points: Pt[]) {
+  const length = pathLength(points);
+  const inset = 0;
+  const step = 2;
+  const samples: Pt[] = [];
+  let walked = 0;
+  let next = length <= inset * 2 + 2 ? length / 2 : inset;
+  const stop = length <= inset * 2 + 2 ? length / 2 : length - inset;
+  for (let i = 1; i < points.length && next <= stop + 0.01; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    const seg = Math.hypot(b.x - a.x, b.y - a.y);
+    while (next <= walked + seg && next <= stop + 0.01) {
+      const t = seg > 0 ? (next - walked) / seg : 0;
+      samples.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+      next += step;
+      if (length <= inset * 2 + 2) return samples;
+    }
+    walked += seg;
+  }
+  if (!samples.length && points.length) samples.push(points[Math.floor(points.length / 2)]);
+  return samples;
+}
+
+function sampleGrid(samples: Pt[], cell: number) {
+  const buckets = new Map<string, Pt[]>();
+  for (const point of samples) {
+    const key = `${Math.floor(point.x / cell)},${Math.floor(point.y / cell)}`;
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(point);
+    else buckets.set(key, [point]);
+  }
+  return buckets;
+}
+
+function nearSamples(buckets: Map<string, Pt[]>, point: Pt, cell: number, minSep: number) {
+  const gx = Math.floor(point.x / cell);
+  const gy = Math.floor(point.y / cell);
+  const window = Math.ceil(minSep / cell);
+  const limit = minSep * minSep;
+  for (let dy = -window; dy <= window; dy++) {
+    for (let dx = -window; dx <= window; dx++) {
+      const bucket = buckets.get(`${gx + dx},${gy + dy}`);
+      if (!bucket) continue;
+      for (const other of bucket) {
+        const ddx = other.x - point.x;
+        const ddy = other.y - point.y;
+        if (ddx * ddx + ddy * ddy < limit) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** Drop the parts of a path that come inside the 0.8-pitch floor of a path already kept. */
+function trimAgainst(points: Pt[], samples: Pt[], minSep: number, minKeep: number) {
+  if (pathLength(points) < minKeep) return [];
+  if (!samples.length) return [points];
+  const cell = Math.max(4, minSep * 0.5);
+  const grid = sampleGrid(samples, cell);
+  const runs: Pt[][] = [];
+  let run: Pt[] = [];
+  const flush = () => {
+    if (pathLength(run) >= minKeep) runs.push(run);
+    run = [];
+  };
+  for (const point of points) {
+    if (nearSamples(grid, point, cell, minSep)) flush();
+    else run.push(point);
+  }
+  flush();
+  return runs;
+}
+
+function crossesKept(points: Pt[], kept: Pt[][]) {
+  return kept.length > 0 && countCrossings([{ points }, ...kept.map((item) => ({ points: item }))]) > 0;
+}
+
+
+/**
+ * A rounded opening on the core, about a fifth of the print width.
+ * The names and dates are one bold size, 1.6 times the ridge type, with an even margin.
+ */
 export function plaqueFor(ridges: { points: Pt[] }[], style: PrintStyle, period: number): Plaque | null {
   if (!style.plaque) return null;
   const raw = plaqueLinesOf(style);
   if (!raw.length || !ridges.length) return null;
   const body = fontSizeFor(period, style.textScale || 1);
-  const lines: PlaqueLine[] = raw.map((text) => {
-    const emphasis = /[A-Za-z]/.test(text) && !/^\d/.test(text);
-    return { text, fontSize: body * (emphasis ? 1.16 : 1.05), emphasis };
-  });
+  const size = body * 1.6;
+  const lines: PlaqueLine[] = raw.map((text) => ({ text, fontSize: size, emphasis: true }));
   const core = printCore(ridges, period);
-  const charRatio = 0.62;
+  const charRatio = 0.68;
+  const lead = 1.22;
   let maxW = 0;
   let block = 0;
-  lines.forEach((line, index) => {
+  for (const line of lines) {
     maxW = Math.max(maxW, estimateWordWidth(line.text, line.fontSize, charRatio, 0));
-    block += line.fontSize * 1.15;
-    if (index < lines.length - 1) block += line.fontSize * 0.16;
-  });
-  const rx = maxW / 2 + period * 0.85;
-  const ry = block / 2 + period * 0.5;
+    block += line.fontSize * lead;
+  }
+  let minX = Infinity;
+  let maxX = -Infinity;
+  for (const ridge of ridges) {
+    for (const point of ridge.points) {
+      if (point.x < minX) minX = point.x;
+      if (point.x > maxX) maxX = point.x;
+    }
+  }
+  const printW = Math.max(period * 8, maxX - minX);
+  const margin = Math.max(size * 0.42, period * 0.75);
+  const textRx = maxW / 2 + margin;
+  const minRx = (printW * 0.18) / 2;
+  const maxRx = (printW * 0.22) / 2;
+  let rx = Math.min(maxRx, Math.max(minRx, (printW * 0.2) / 2));
+  if (textRx > rx) rx = textRx;
+  const side = rx - maxW / 2;
+  const ry = block / 2 + side;
   const baselines: number[] = [];
   let y = core.y - block / 2;
-  lines.forEach((line, index) => {
-    baselines.push(y + line.fontSize * 0.82);
-    y += line.fontSize * 1.15;
-    if (index < lines.length - 1) y += line.fontSize * 0.16;
+  lines.forEach((line) => {
+    baselines.push(y + line.fontSize * 0.8);
+    y += line.fontSize * lead;
   });
   return { cx: core.x, cy: core.y, rx, ry, lines, baselines };
 }
@@ -1114,22 +1265,42 @@ export function outsidePlaque(points: Pt[], plaque: Plaque, pad = 1.5): Pt[][] {
   return segments;
 }
 
-/** A thin filled ridge, with no stroke, for the runs the words do not reach. */
+/** A text-weight filled ridge, with no stroke, for the runs left after every word is placed. */
 export function ribbonPath(points: Pt[], width: number) {
   if (points.length < 2 || width <= 0) return "";
+  const cleaned: Pt[] = [points[0]];
+  for (let i = 1; i < points.length; i++) {
+    const prev = cleaned[cleaned.length - 1];
+    if (Math.hypot(points[i].x - prev.x, points[i].y - prev.y) >= 0.75) cleaned.push(points[i]);
+  }
+  if (cleaned.length < 2) return "";
+  const half = width / 2;
+  const tangent = (a: Pt, b: Pt) => {
+    const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+    return { x: (b.x - a.x) / len, y: (b.y - a.y) / len };
+  };
   const left: Pt[] = [];
   const right: Pt[] = [];
-  for (let i = 0; i < points.length; i++) {
-    const prev = points[Math.max(0, i - 1)];
-    const next = points[Math.min(points.length - 1, i + 1)];
-    const dx = next.x - prev.x;
-    const dy = next.y - prev.y;
-    const len = Math.hypot(dx, dy) || 1;
-    const ox = (-dy / len) * (width / 2);
-    const oy = (dx / len) * (width / 2);
-    left.push({ x: points[i].x + ox, y: points[i].y + oy });
-    right.push({ x: points[i].x - ox, y: points[i].y - oy });
+  const push = (point: Pt, dir: { x: number; y: number }) => {
+    left.push({ x: point.x - dir.y * half, y: point.y + dir.x * half });
+    right.push({ x: point.x + dir.y * half, y: point.y - dir.x * half });
+  };
+  for (let i = 0; i < cleaned.length; i++) {
+    const prev = cleaned[Math.max(0, i - 1)];
+    const next = cleaned[Math.min(cleaned.length - 1, i + 1)];
+    const incoming = tangent(prev, cleaned[i]);
+    const outgoing = tangent(cleaned[i], next);
+    if (i > 0 && i < cleaned.length - 1 && incoming.x * outgoing.x + incoming.y * outgoing.y < 0.55) {
+      push(cleaned[i], incoming);
+      push(cleaned[i], outgoing);
+      continue;
+    }
+    const dx = outgoing.x + incoming.x;
+    const dy = outgoing.y + incoming.y;
+    const len = Math.hypot(dx, dy);
+    push(cleaned[i], len > 1e-3 ? { x: dx / len, y: dy / len } : outgoing);
   }
+  if (left.length < 2) return "";
   const ring = [...left, ...right.reverse()];
   return `M ${ring.map((point) => `${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" L ")} Z`;
 }

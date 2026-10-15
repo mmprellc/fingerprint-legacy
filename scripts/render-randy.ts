@@ -4,7 +4,7 @@ import sharp from "sharp";
 import { rgbaToGray } from "../lib/fingerprint/engine";
 import { producePortrait } from "../lib/fingerprint/pipeline";
 import { prepareStudioCapture } from "../lib/fingerprint/prepare-capture";
-import { printCore, ridgePitch } from "../lib/fingerprint/lettering";
+import { fontSizeFor, plaqueFor, printCore, ridgePitch } from "../lib/fingerprint/lettering";
 import { buildPreviewSvg, mapPrint } from "../lib/fingerprint/preview";
 import { renderArtwork } from "../lib/fingerprint/render-print";
 import { RANDY_CZYZ_NAMES, RANDY_CZYZ_SCRIPTURES, randyCzyzStyle } from "../lib/pieces";
@@ -74,6 +74,21 @@ async function main() {
   }
   if (preview.svg.includes("RANDY CZYZ FINGERPRINT LEGACY")) throw new Error("The old title is still on the portrait");
   if (!preview.svg.includes('class="plaque"')) throw new Error("The center plaque is missing");
+  const plaque = plaqueFor(result.ridges, randyCzyzStyle, result.period);
+  if (!plaque) throw new Error("The center plaque is missing");
+  let spanMin = Infinity;
+  let spanMax = -Infinity;
+  for (const ridge of result.ridges) {
+    for (const point of ridge.points) {
+      if (point.x < spanMin) spanMin = point.x;
+      if (point.x > spanMax) spanMax = point.x;
+    }
+  }
+  const plaqueRatio = (plaque.rx * 2) / Math.max(1, spanMax - spanMin);
+  if (plaqueRatio < 0.18 || plaqueRatio > 0.22) throw new Error(`Plaque width is ${(plaqueRatio * 100).toFixed(1)}% of the print`);
+  const bodySize = fontSizeFor(result.period, randyCzyzStyle.textScale || 1);
+  if (plaque.lines.some((line) => line.fontSize < bodySize * 1.55)) throw new Error("Plaque type is smaller than 1.6 times the ridges");
+  if (/<path\b[^>]*\sstroke=/.test(preview.svg)) throw new Error("The preview still draws a stroke");
 
   const out = path.join(process.cwd(), "public/pieces");
   fs.mkdirSync(out, { recursive: true });
@@ -105,7 +120,7 @@ async function main() {
     const pairLabel = 56;
     const pairW = beforeW + afterW + pairGap * 3;
     const pairH = full.height + pairLabel + pairGap;
-    const pair = `<svg xmlns="http://www.w3.org/2000/svg" width="${pairW}" height="${pairH}"><rect width="100%" height="100%" fill="#FFFFFF"/><text x="${pairGap}" y="36" font-family="Georgia" font-size="22" fill="#111111">Previous</text><text x="${beforeW + pairGap * 2}" y="36" font-family="Georgia" font-size="22" fill="#111111">With the family stories</text></svg>`;
+    const pair = `<svg xmlns="http://www.w3.org/2000/svg" width="${pairW}" height="${pairH}"><rect width="100%" height="100%" fill="#FFFFFF"/><text x="${pairGap}" y="36" font-family="Georgia" font-size="22" fill="#111111">Previous</text><text x="${beforeW + pairGap * 2}" y="36" font-family="Georgia" font-size="22" fill="#111111">Open plaque, text only</text></svg>`;
     await sharp(Buffer.from(pair))
       .composite([
         { input: before, left: pairGap, top: pairLabel },

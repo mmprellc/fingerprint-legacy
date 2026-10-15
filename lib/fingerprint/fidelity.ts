@@ -1,5 +1,5 @@
 import { pathLength, slicePath } from "./geometry";
-import { estimateWordWidth, fontSizeFor, inPlaque, planPortrait, plaqueFor, ridgePitch, roleScale } from "./lettering";
+import { estimateWordWidth, fontSizeFor, inPlaque, planPortrait, plaqueClearance, plaqueFor, ridgePitch, roleScale } from "./lettering";
 import { fontById } from "./preview";
 import type { Check } from "./audit";
 import type { ExtractResult, PrintStyle, Pt } from "./types";
@@ -212,6 +212,7 @@ export function scoreFidelity(result: ExtractResult, style: PrintStyle): Fidelit
 
   const spans = textSpans(result, style);
   const plaque = plaqueFor(result.ridges, style, period);
+  const opening = plaque ? plaqueClearance(period, style.textScale || 1) : 0;
   const reach = ridgePitch(period) * COVER_REACH;
   const near = paintNear(spans, w, h, reach);
   // Spill uses the text itself, not the coverage halo, so a print that fills
@@ -225,7 +226,7 @@ export function scoreFidelity(result: ExtractResult, style: PrintStyle): Fidelit
     const row = y * w;
     for (let x = 0; x < w; x += step) {
       const inside = mask[row + x] === 1;
-      const onPlaque = Boolean(plaque && inPlaque(x, y, plaque));
+      const onPlaque = Boolean(plaque && inPlaque(x, y, plaque, opening));
       if (inside) {
         ink++;
         if (near[row + x] || onPlaque) hit++;
@@ -243,7 +244,7 @@ export function scoreFidelity(result: ExtractResult, style: PrintStyle): Fidelit
     for (let x = 0; x < w; x += 4) {
       const i = row + x;
       if (!mask[i] || coherence[i] < 0.28) continue;
-      if (plaque && inPlaque(x, y, plaque)) continue;
+      if (plaque && inPlaque(x, y, plaque, opening)) continue;
       flowN++;
       const nearest = grid.nearest(x, y, reach);
       if (!nearest) continue;
@@ -262,9 +263,11 @@ export function scoreFidelity(result: ExtractResult, style: PrintStyle): Fidelit
   const drawnSpans = spans.slice();
   if (plaque) {
     const band = Math.max(2, period * 0.35);
-    for (let y = plaque.cy - plaque.ry; y <= plaque.cy + plaque.ry; y += band) {
-      const dy = (y - plaque.cy) / plaque.ry;
-      const half = plaque.rx * Math.sqrt(Math.max(0, 1 - dy * dy));
+    const rx = plaque.rx + opening;
+    const ry = plaque.ry + opening;
+    for (let y = plaque.cy - ry; y <= plaque.cy + ry; y += band) {
+      const dy = (y - plaque.cy) / ry;
+      const half = rx * Math.sqrt(Math.max(0, 1 - dy * dy));
       drawnSpans.push([
         { x: plaque.cx - half, y },
         { x: plaque.cx + half, y },

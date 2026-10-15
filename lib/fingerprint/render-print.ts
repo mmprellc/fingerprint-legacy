@@ -2,7 +2,7 @@ import { PDFDocument } from "pdf-lib";
 import sharp from "sharp";
 import { nameSpread } from "./audit";
 import { loadRidgeFace, layoutRun, type GlyphFont } from "./glyphs";
-import { estimateWordWidth, fontSizeFor, plaqueFor, planPortrait, ribbonPath, ridgeWidth, rimWeights, roleScale } from "./lettering";
+import { estimateWordWidth, fallbackWidth, fontSizeFor, plaqueFor, planPortrait, ribbonPath, rimWeights, roleScale } from "./lettering";
 import { fontById, mapPrint, presetById } from "./preview";
 import type { PreviewPrint } from "./preview";
 import type { PrintStyle } from "./types";
@@ -165,7 +165,7 @@ export async function renderArtwork(request: RenderRequest) {
       plaque.lines.forEach((line, lineIndex) => {
         const size = line.fontSize * fit;
         const baseline = oy + (plaque.baselines[lineIndex] - minY) * fit;
-        body.push(layoutCentered(line.emphasis ? boldFace : titleFace, line.text, size, cx, baseline, 0));
+        body.push(layoutCentered(boldFace, line.text, size, cx, baseline, 0));
       });
     }
     planned.forEach((runs, ridgeIndex) => {
@@ -174,7 +174,7 @@ export async function renderArtwork(request: RenderRequest) {
       for (const run of runs) {
         if (run.role === "line") {
           const placed = run.points.map(place);
-          const d = ribbonPath(placed, ridgeWidth(request.period) * fit * 0.28);
+          const d = ribbonPath(placed, fallbackWidth(request.period, request.style.textScale || 1) * fit);
           if (d) body.push(`<path class="ridge-fallback" d="${d}" fill="${ink}"/>`);
           continue;
         }

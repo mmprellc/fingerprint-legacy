@@ -1,5 +1,5 @@
 import { escapeXml, toPathD } from "./geometry";
-import { estimateWordWidth, fontSizeFor, plaqueFor, planPortrait, ribbonPath, ridgeWidth, rimWeights, roleScale } from "./lettering";
+import { estimateWordWidth, fallbackWidth, fontSizeFor, plaqueFor, planPortrait, ribbonPath, rimWeights, roleScale } from "./lettering";
 import { FONTS, INK_PRESETS, type PrintStyle, type Ridge } from "./types";
 
 export { fontSizeFor };
@@ -151,7 +151,7 @@ export function buildPreviewSvg(
     for (const item of emit) {
       const run = item.run;
       if (run.role === "line") {
-        const d = ribbonPath(run.points, ridgeWidth(period) * 0.28);
+        const d = ribbonPath(run.points, fallbackWidth(period, style.textScale || 1));
         if (d) texts.push(`<path class="ridge-fallback" d="${d}" fill="${preset.ink}"/>`);
         continue;
       }
