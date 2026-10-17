@@ -1031,7 +1031,6 @@ export function planPortrait(
   }, minLen);
   const neighborLimit = Math.max(36, ridgePitch(period) * 3.2);
   const readable = chained.filter((slot) => pathLength(slot.points) >= verseFloor);
-  const minSep = ridgePitch(period) * 0.8;
   // Only the real pile-ups are cut. Ridges that already clear the 0.8-pitch floor stay whole.
   const tangle = ridgePitch(period) * 0.55;
   const separated: LoosePath[] = [];
@@ -1043,6 +1042,9 @@ export function planPortrait(
       separatedSamples.push(...interiorSamples(piece));
     }
   }
+  // The loop sits tighter than the outer print. Ease those centerlines apart
+  // without deleting a ridge, so the ink they covered stays within reach.
+  if (plaque) spreadCore(separated, plaque, period);
   const remnants = chained.filter((slot) => {
     const length = pathLength(slot.points);
     return length >= period * 1.2 && length < verseFloor;
@@ -1171,10 +1173,11 @@ export function planPortrait(
   const rims = rimWeights(ridges);
   const farFromPlaque = (points: Pt[]) => {
     if (!plaque) return true;
+    // No drawn line in the inner field. The band around the plaque stays text or paper.
     return points.every((point) => {
       const nx = (point.x - plaque.cx) / plaque.rx;
       const ny = (point.y - plaque.cy) / plaque.ry;
-      return nx * nx + ny * ny > 1.44;
+      return nx * nx + ny * ny > 9;
     });
   };
   if (storiesDone || (stories.length === 0 && plaque)) {
@@ -1207,7 +1210,7 @@ export function planPortrait(
 /** How far a ridge centerline stays outside the plaque, so the letters clear the opening. */
 export function plaqueClearance(period: number, textScale = 1) {
   const body = fontSizeFor(period, textScale);
-  return Math.max(period * 1.45, body * 1.7);
+  return Math.max(period * 1.6, body * 1.85);
 }
 
 /** Width of a leftover ridge. It matches the stem of the body type, and it is never a heavy stroke. */
@@ -1268,6 +1271,156 @@ function nearSamples(buckets: Map<string, Pt[]>, point: Pt, cell: number, minSep
     }
   }
   return false;
+}
+
+/**
+ * The ridges around the plaque sit closer together than the outer print.
+ * Nudge those centerlines apart, up to a short distance, so the gap matches
+ * the outer field. The nudge stays inside the coverage reach, and a ridge is
+ * never deleted to buy the space.
+ */
+function spreadCore(slots: LoosePath[], plaque: Plaque, period: number) {
+  if (slots.length < 4) return;
+  // Lettering must not move the extracted ridges. Those stay the curvature source.
+  for (const slot of slots) slot.points = slot.points.map((point) => ({ x: point.x, y: point.y }));
+  const band = 3.3;
+  const pitch = ridgePitch(period);
+  const radiusOf = (point: Pt) => {
+    const nx = (point.x - plaque.cx) / plaque.rx;
+    const ny = (point.y - plaque.cy) / plaque.ry;
+    return Math.hypot(nx, ny);
+  };
+  const outward = (point: Pt) => {
+    const gx = (point.x - plaque.cx) / (plaque.rx * plaque.rx);
+    const gy = (point.y - plaque.cy) / (plaque.ry * plaque.ry);
+    const glen = Math.hypot(gx, gy) || 1;
+    return { x: gx / glen, y: gy / glen };
+  };
+  const far = slots.filter((slot) => {
+    const radii: number[] = [];
+    for (let i = 0; i < slot.points.length; i += 4) radii.push(radiusOf(slot.points[i]));
+    if (!radii.length) return false;
+    radii.sort((a, b) => a - b);
+    return radii[Math.floor(radii.length / 2)] >= 4;
+  });
+  const outer = medianNearestGap(far.length ? far : slots, pitch * 0.72, pitch * 1.22);
+  const target = Math.max(pitch, Math.min(outer || pitch, pitch * 1.18));
+  const maxShift = Math.min(pitch * 0.95, 12.5);
+  const home = slots.map((slot) => slot.points.map((point) => ({ x: point.x, y: point.y })));
+  const cell = 8;
+  for (let iter = 0; iter < 8; iter++) {
+    const buckets = new Map<string, { x: number; y: number; id: number }[]>();
+    slots.forEach((slot, id) => {
+      for (let i = 0; i < slot.points.length; i += 3) {
+        const point = slot.points[i];
+        const key = `${Math.floor(point.x / cell)},${Math.floor(point.y / cell)}`;
+        const bucket = buckets.get(key);
+        const sample = { x: point.x, y: point.y, id };
+        if (bucket) bucket.push(sample);
+        else buckets.set(key, [sample]);
+      }
+    });
+    slots.forEach((slot, id) => {
+      const raw = slot.points.map(() => 0);
+      for (let i = 0; i < slot.points.length; i++) {
+        const point = slot.points[i];
+        if (radiusOf(point) >= band) continue;
+        const gx = Math.floor(point.x / cell);
+        const gy = Math.floor(point.y / cell);
+        let best = Infinity;
+        let ox = point.x;
+        let oy = point.y;
+        for (let dy = -3; dy <= 3; dy++) {
+          for (let dx = -3; dx <= 3; dx++) {
+            const bucket = buckets.get(`${gx + dx},${gy + dy}`);
+            if (!bucket) continue;
+            for (const other of bucket) {
+              if (other.id === id) continue;
+              const d = Math.hypot(other.x - point.x, other.y - point.y);
+              if (d > 0.5 && d < best) {
+                best = d;
+                ox = other.x;
+                oy = other.y;
+              }
+            }
+          }
+        }
+        if (best >= target || best === Infinity) continue;
+        const awayX = (point.x - ox) / best;
+        const awayY = (point.y - oy) / best;
+        const normal = outward(point);
+        const push = Math.min((target - best) * 0.5, 1.6);
+        const radius = radiusOf(point);
+        const edge = band - 0.85;
+        const fade = radius <= edge ? 1 : radius >= band ? 0 : (band - radius) / (band - edge);
+        const taper = fade * fade * (3 - 2 * fade);
+        raw[i] = (awayX * normal.x + awayY * normal.y) * push * taper;
+      }
+      const smooth = raw.slice();
+      for (let pass = 0; pass < 6; pass++) {
+        const next = smooth.slice();
+        for (let i = 1; i < smooth.length - 1; i++) {
+          next[i] = smooth[i - 1] * 0.25 + smooth[i] * 0.5 + smooth[i + 1] * 0.25;
+        }
+        for (let i = 0; i < next.length; i++) smooth[i] = next[i];
+      }
+      for (let i = 0; i < slot.points.length; i++) {
+        if (Math.abs(smooth[i]) < 0.01) continue;
+        const point = slot.points[i];
+        const normal = outward(point);
+        let x = point.x + normal.x * smooth[i];
+        let y = point.y + normal.y * smooth[i];
+        if (radiusOf({ x, y }) < 1.04) continue;
+        const origin = home[id][i];
+        const shifted = Math.hypot(x - origin.x, y - origin.y);
+        if (shifted > maxShift) {
+          const scale = maxShift / shifted;
+          x = origin.x + (x - origin.x) * scale;
+          y = origin.y + (y - origin.y) * scale;
+        }
+        point.x = x;
+        point.y = y;
+      }
+    });
+  }
+}
+
+/** Median distance from each sample to the nearest other path. Same-path points do not count. */
+function medianNearestGap(slots: { points: Pt[] }[], minGap = 0.5, maxGap = 80) {
+  const cell = 8;
+  const points: { x: number; y: number; id: number }[] = [];
+  slots.forEach((slot, id) => {
+    for (let i = 0; i < slot.points.length; i += 4) points.push({ x: slot.points[i].x, y: slot.points[i].y, id });
+  });
+  if (points.length < 8) return 0;
+  const buckets = new Map<string, { x: number; y: number; id: number }[]>();
+  for (const point of points) {
+    const key = `${Math.floor(point.x / cell)},${Math.floor(point.y / cell)}`;
+    const list = buckets.get(key);
+    if (list) list.push(point);
+    else buckets.set(key, [point]);
+  }
+  const gaps: number[] = [];
+  for (const point of points) {
+    const gx = Math.floor(point.x / cell);
+    const gy = Math.floor(point.y / cell);
+    let best = Infinity;
+    for (let dy = -3; dy <= 3; dy++) {
+      for (let dx = -3; dx <= 3; dx++) {
+        const bucket = buckets.get(`${gx + dx},${gy + dy}`);
+        if (!bucket) continue;
+        for (const other of bucket) {
+          if (other.id === point.id) continue;
+          const d = Math.hypot(other.x - point.x, other.y - point.y);
+          if (d > minGap && d < best) best = d;
+        }
+      }
+    }
+    if (best <= maxGap) gaps.push(best);
+  }
+  if (!gaps.length) return 0;
+  gaps.sort((a, b) => a - b);
+  return gaps[Math.floor(gaps.length / 2)];
 }
 
 /** Drop the parts of a path that come inside the 0.8-pitch floor of a path already kept. */

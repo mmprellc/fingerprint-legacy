@@ -164,7 +164,7 @@ async function main() {
     const pairLabel = 56;
     const pairW = beforeW + afterW + pairGap * 3;
     const pairH = full.height + pairLabel + pairGap;
-    const pair = `<svg xmlns="http://www.w3.org/2000/svg" width="${pairW}" height="${pairH}"><rect width="100%" height="100%" fill="#FFFFFF"/><text x="${pairGap}" y="36" font-family="Georgia" font-size="22" fill="#111111">Previous</text><text x="${beforeW + pairGap * 2}" y="36" font-family="Georgia" font-size="22" fill="#111111">Names fill the ridges</text></svg>`;
+    const pair = `<svg xmlns="http://www.w3.org/2000/svg" width="${pairW}" height="${pairH}"><rect width="100%" height="100%" fill="#FFFFFF"/><text x="${pairGap}" y="36" font-family="Georgia" font-size="22" fill="#111111">Previous</text><text x="${beforeW + pairGap * 2}" y="36" font-family="Georgia" font-size="22" fill="#111111">Even spacing around the plaque</text></svg>`;
     await sharp(Buffer.from(pair))
       .composite([
         { input: before, left: pairGap, top: pairLabel },
