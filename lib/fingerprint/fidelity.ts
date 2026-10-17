@@ -1,5 +1,6 @@
 import { pathLength, slicePath } from "./geometry";
-import { bodyTrackingEm, bodyWordGapEm, estimateWordWidth, fontSizeFor, inPlaque, planPortrait, plaqueClearance, plaqueFor, ridgePitch, roleScale } from "./lettering";
+import { emphasisFaceFile, glyphWidth, loadRidgeFace } from "./glyphs";
+import { bodyTrackingEm, bodyWordGapEm, fontSizeFor, inPlaque, planPortrait, plaqueClearance, plaqueFor, ridgePitch, roleScale } from "./lettering";
 import { fontById } from "./preview";
 import type { Check } from "./audit";
 import type { ExtractResult, PrintStyle, Pt } from "./types";
@@ -55,10 +56,6 @@ class AimedGrid {
   }
 }
 
-function wordWidth(word: string, size: number, charRatio: number, tracking: number) {
-  return estimateWordWidth(word, size, charRatio, tracking);
-}
-
 /** The part of a run the glyphs actually occupy. A trimmed dedication is kept whole. */
 function inkSpan(points: Pt[], text: string, measure: (word: string) => number, gap: number) {
   const words = text.split(/\s+/).filter(Boolean);
@@ -76,18 +73,22 @@ function textSpans(result: ExtractResult, style: PrintStyle) {
   const ridges = result.ridges;
   const period = result.period;
   const font = fontById(style.font);
-  const ratio = font.charRatio;
+  const regular = loadRidgeFace(font.file);
+  const bold = loadRidgeFace(emphasisFaceFile(font.file));
   const fontSize = fontSizeFor(period, style.textScale || 1, font.capEm);
+  const widthOf = (word: string, role: "body" | "core" | "secondary" | "line") => {
+    const size = fontSize * roleScale(role);
+    const trackingEm = role === "body" ? bodyTrackingEm(style.textScale) : 0.045;
+    const gapEm = role === "body" ? bodyWordGapEm(style.textScale) : 0.16;
+    const face = role === "core" || role === "secondary" ? bold : regular;
+    return glyphWidth(face, word, size, -size * trackingEm, size * gapEm);
+  };
   const planned = planPortrait(
     ridges,
     style,
     [],
     period,
-    (word, role) => {
-      const size = fontSize * roleScale(role);
-      const tracking = role === "body" ? bodyTrackingEm(style.textScale) : 0.045;
-      return wordWidth(word, size, ratio, -size * tracking);
-    },
+    (word, role) => widthOf(word, role),
     fontSize * roleScale("body") * bodyWordGapEm(style.textScale),
   );
   const spans: Pt[][] = [];
@@ -99,9 +100,11 @@ function textSpans(result: ExtractResult, style: PrintStyle) {
       }
       if (!run.text) continue;
       const roleSize = fontSize * roleScale(run.role);
-      const tracking = run.role === "body" ? bodyTrackingEm(style.textScale) : 0.045;
-      const gap = fontSize * roleScale("body") * bodyWordGapEm(style.textScale);
-      const span = inkSpan(run.points, run.text, (word) => wordWidth(word, roleSize, ratio, -roleSize * tracking), gap);
+      const trackingEm = run.role === "body" ? bodyTrackingEm(style.textScale) : 0.045;
+      const gapEm = run.role === "body" ? bodyWordGapEm(style.textScale) : 0.16;
+      const gap = roleSize * gapEm;
+      const face = run.role === "core" || run.role === "secondary" ? bold : regular;
+      const span = inkSpan(run.points, run.text, (word) => glyphWidth(face, word, roleSize, -roleSize * trackingEm, gap), gap);
       if (span.length > 1) spans.push(span);
     }
   });

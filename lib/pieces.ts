@@ -59,6 +59,10 @@ export const randyCzyzStyle: PrintStyle = {
   marriage: "Married",
   marriageDate: "11.16.1973",
   names: RANDY_CZYZ_NAMES,
+  nameMax: [
+    { name: "Hanadi Czyz", max: 1 },
+    { name: "Adalis Czyz", max: 2 },
+  ],
   scriptures: RANDY_CZYZ_SCRIPTURES,
   ...(RANDY_CZYZ_STORIES.length ? { stories: RANDY_CZYZ_STORIES } : {}),
 };

@@ -5,7 +5,8 @@ import { rgbaToGray } from "../lib/fingerprint/engine";
 import { producePortrait } from "../lib/fingerprint/pipeline";
 import { prepareStudioCapture } from "../lib/fingerprint/prepare-capture";
 import { pathLength } from "../lib/fingerprint/geometry";
-import { bodyTrackingEm, bodyWordGapEm, estimateWordWidth, fontSizeFor, plaqueFor, planPortrait, printCore, ridgePitch } from "../lib/fingerprint/lettering";
+import { emphasisFaceFile, glyphWidth, loadRidgeFace } from "../lib/fingerprint/glyphs";
+import { bodyTrackingEm, bodyWordGapEm, fontSizeFor, plaqueFor, planPortrait, printCore, ridgePitch } from "../lib/fingerprint/lettering";
 import { buildPreviewSvg, fontById, mapPrint } from "../lib/fingerprint/preview";
 import { renderArtwork } from "../lib/fingerprint/render-print";
 import { RANDY_CZYZ_NAMES, RANDY_CZYZ_SCRIPTURES, randyCzyzStyle } from "../lib/pieces";
@@ -100,15 +101,22 @@ async function main() {
     if (at < 0) throw new Error(`A story is not whole on the ridges: ${story.slice(0, 48)}`);
     storyAt = at + story.length;
   }
-  const face = fontById(randyCzyzStyle.font);
-  const tracking = -bodySize * bodyTrackingEm(randyCzyzStyle.textScale);
+  const faceId = fontById(randyCzyzStyle.font);
+  const regular = loadRidgeFace(faceId.file);
+  const bold = loadRidgeFace(emphasisFaceFile(faceId.file));
+  const trackingEm = bodyTrackingEm(randyCzyzStyle.textScale);
   const wordGap = bodySize * bodyWordGapEm(randyCzyzStyle.textScale);
   const planned = planPortrait(
     result.ridges,
     randyCzyzStyle,
     [],
     result.period,
-    (word) => estimateWordWidth(word, bodySize, face.charRatio, tracking),
+    (word, role) => {
+      const tracking = role === "body" ? trackingEm : 0.045;
+      const gapEm = role === "body" ? bodyWordGapEm(randyCzyzStyle.textScale) : 0.16;
+      const face = role === "core" || role === "secondary" ? bold : regular;
+      return glyphWidth(face, word, bodySize, -bodySize * tracking, bodySize * gapEm);
+    },
     wordGap,
   );
   let glyph = 0;
@@ -123,9 +131,12 @@ async function main() {
         continue;
       }
       const words = run.text.split(/\s+/).filter(Boolean);
+      const runGap = run.role === "body" ? wordGap : bodySize * 0.16;
+      const runFace = run.role === "core" || run.role === "secondary" ? bold : regular;
+      const runTracking = -(run.role === "body" ? bodySize * trackingEm : bodySize * 0.045);
       let used = 2;
       words.forEach((word, index) => {
-        used += (index ? wordGap : 0) + estimateWordWidth(word, bodySize, face.charRatio, tracking);
+        used += (index ? runGap : 0) + glyphWidth(runFace, word, bodySize, runTracking, runGap);
       });
       glyph += Math.min(length, used);
     }
@@ -164,7 +175,7 @@ async function main() {
     const pairLabel = 56;
     const pairW = beforeW + afterW + pairGap * 3;
     const pairH = full.height + pairLabel + pairGap;
-    const pair = `<svg xmlns="http://www.w3.org/2000/svg" width="${pairW}" height="${pairH}"><rect width="100%" height="100%" fill="#FFFFFF"/><text x="${pairGap}" y="36" font-family="Georgia" font-size="22" fill="#111111">Previous</text><text x="${beforeW + pairGap * 2}" y="36" font-family="Georgia" font-size="22" fill="#111111">Even spacing around the plaque</text></svg>`;
+    const pair = `<svg xmlns="http://www.w3.org/2000/svg" width="${pairW}" height="${pairH}"><rect width="100%" height="100%" fill="#FFFFFF"/><text x="${pairGap}" y="36" font-family="Georgia" font-size="22" fill="#111111">Previous</text><text x="${beforeW + pairGap * 2}" y="36" font-family="Georgia" font-size="22" fill="#111111">Bold dedications, whole words</text></svg>`;
     await sharp(Buffer.from(pair))
       .composite([
         { input: before, left: pairGap, top: pairLabel },

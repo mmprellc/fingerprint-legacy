@@ -1,5 +1,6 @@
 import { escapeXml, toPathD } from "./geometry";
-import { bodyTrackingEm, bodyWordGapEm, estimateWordWidth, fallbackWidth, fontSizeFor, plaqueFor, planPortrait, ribbonPath, rimWeights, roleScale } from "./lettering";
+import { emphasisFaceFile, glyphWidth, loadRidgeFace } from "./glyphs";
+import { bodyTrackingEm, bodyWordGapEm, fallbackWidth, fontSizeFor, plaqueFor, planPortrait, ribbonPath, roleScale } from "./lettering";
 import { FONTS, INK_PRESETS, type PrintStyle, type Ridge } from "./types";
 
 export { fontSizeFor };
@@ -118,8 +119,8 @@ export function buildPreviewSvg(
   let index = 0;
   for (let printIndex = 0; printIndex < mapped.length; printIndex++) {
     const ridges = mapped[printIndex];
-    const rims = rimWeights(ridges);
     const bodySize = fontSize * roleScale("body");
+    const boldFace = loadRidgeFace(emphasisFaceFile(font.file));
     const planned = planPortrait(
       ridges,
       style,
@@ -127,7 +128,10 @@ export function buildPreviewSvg(
       period,
       (word, role) => {
         const size = fontSize * roleScale(role);
-        return estimateWordWidth(word, size, font.charRatio, -size * (role === "body" ? bodyTrackingEm(style.textScale) : 0.045));
+        const trackingEm = role === "body" ? bodyTrackingEm(style.textScale) : 0.045;
+        const gapEm = role === "body" ? bodyWordGapEm(style.textScale) : 0.16;
+        const face = role === "core" || role === "secondary" ? boldFace : loadRidgeFace(font.file);
+        return glyphWidth(face, word, size, -size * trackingEm, size * gapEm);
       },
       bodySize * bodyWordGapEm(style.textScale),
     );
@@ -156,16 +160,15 @@ export function buildPreviewSvg(
         continue;
       }
       if (!run.text) continue;
-      const rim = rims[item.ridgeIndex] ?? 0;
-      const fill = rim > 0.35 ? "#1A1C1E" : preset.ink;
       const size = fontSize * roleScale(run.role);
-      const ink = run.role === "body" ? fill : "#1A1C1E";
+      const ink = "#000000";
+      const weight = run.role === "core" || run.role === "secondary" ? 700 : 400;
       const id = `r${index++}`;
       defs.push(`<path id="${id}" d="${toPathD(run.points)}"/>`);
       const dy = (size * 0.38).toFixed(2);
       const tracking = run.role === "body" ? -size * bodyTrackingEm(style.textScale) : -size * 0.045;
       texts.push(
-        `<text class="ridge ridge-${run.role}" font-size="${size.toFixed(2)}" letter-spacing="${tracking.toFixed(2)}" fill="${ink}" font-family="${escapeXml(opts?.fontFamily || font.family)}"><textPath href="#${id}" dy="${dy}">${escapeXml(run.text)}</textPath></text>`,
+        `<text class="ridge ridge-${run.role}" font-size="${size.toFixed(2)}" font-weight="${weight}" letter-spacing="${tracking.toFixed(2)}" fill="${ink}" font-family="${escapeXml(opts?.fontFamily || font.family)}"><textPath href="#${id}" dy="${dy}">${escapeXml(run.text)}</textPath></text>`,
       );
     }
   }

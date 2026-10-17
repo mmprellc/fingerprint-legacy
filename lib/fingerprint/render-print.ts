@@ -1,20 +1,11 @@
 import { PDFDocument } from "pdf-lib";
 import sharp from "sharp";
 import { nameSpread } from "./audit";
-import { loadRidgeFace, layoutRun, type GlyphFont } from "./glyphs";
-import { bodyTrackingEm, bodyWordGapEm, estimateWordWidth, fallbackWidth, fontSizeFor, plaqueFor, planPortrait, ribbonPath, rimWeights, roleScale } from "./lettering";
+import { emphasisFaceFile, glyphWidth, loadRidgeFace, layoutRun, paintGlyph, type GlyphFont } from "./glyphs";
+import { bodyTrackingEm, bodyWordGapEm, fallbackWidth, fontSizeFor, plaqueFor, planPortrait, ribbonPath, roleScale } from "./lettering";
 import { fontById, mapPrint, presetById } from "./preview";
 import type { PreviewPrint } from "./preview";
 import type { PrintStyle } from "./types";
-
-function hexToRgb(hex: string) {
-  const value = hex.replace("#", "");
-  return {
-    r: parseInt(value.slice(0, 2), 16),
-    g: parseInt(value.slice(2, 4), 16),
-    b: parseInt(value.slice(4, 6), 16),
-  };
-}
 
 function advanceOf(font: GlyphFont, ch: string, fontSize: number) {
   const glyph = font.charToGlyph(ch);
@@ -29,14 +20,6 @@ function measureToken(font: GlyphFont, word: string, fontSize: number, tracking:
     for (const ch of part) width += Math.max(0.4, advanceOf(font, ch, fontSize) + tracking);
   });
   return width;
-}
-
-function mixHex(from: string, to: string, t: number) {
-  const a = hexToRgb(from);
-  const b = hexToRgb(to);
-  const mix = (start: number, end: number) => Math.round(start + (end - start) * t);
-  const hex = (value: number) => value.toString(16).padStart(2, "0");
-  return `#${hex(mix(a.r, b.r))}${hex(mix(a.g, b.g))}${hex(mix(a.b, b.b))}`;
 }
 
 export type RenderRequest = {
@@ -114,7 +97,7 @@ export async function renderArtwork(request: RenderRequest) {
   }
   if (!request.matchSource) {
     margin = Math.round(Math.min(paperW, paperH) * 0.055);
-    topPx = hasTitle ? Math.round(paperH * 0.078) : margin;
+    topPx = hasTitle ? Math.round(paperH * (request.style.headerName?.trim() ? 0.108 : 0.078)) : margin;
     bottomPx = hasFooter ? Math.round(paperH * 0.07) : margin;
     const availW = paperW - margin * 2;
     const availH = paperH - topPx - bottomPx;
@@ -129,9 +112,9 @@ export async function renderArtwork(request: RenderRequest) {
   const ridgeSizes = new Set<string>();
   request.prints.forEach((print) => {
     const ridges = mapPrint(print);
-    const rims = rimWeights(ridges);
     const faceId = fontById(request.style.font);
     const sourceSize = fontSizeFor(request.period, request.style.textScale || 1, faceId.capEm);
+    const boldSource = loadRidgeFace(emphasisFaceFile(faceId.file));
     const planned = planPortrait(
       ridges,
       request.style,
@@ -139,8 +122,10 @@ export async function renderArtwork(request: RenderRequest) {
       request.period,
       (word, role) => {
         const size = sourceSize * roleScale(role);
-        const tracking = role === "body" ? bodyTrackingEm(request.style.textScale) : 0.045;
-        return estimateWordWidth(word, size, faceId.charRatio, -size * tracking);
+        const trackingEm = role === "body" ? bodyTrackingEm(request.style.textScale) : 0.045;
+        const gapEm = role === "body" ? bodyWordGapEm(request.style.textScale) : 0.16;
+        const measured = role === "core" || role === "secondary" ? boldSource : face;
+        return glyphWidth(measured, word, size, -size * trackingEm, size * gapEm);
       },
       sourceSize * roleScale("body") * bodyWordGapEm(request.style.textScale),
     );
@@ -168,23 +153,21 @@ export async function renderArtwork(request: RenderRequest) {
         body.push(layoutCentered(boldFace, line.text, size, cx, baseline, 0));
       });
     }
-    planned.forEach((runs, ridgeIndex) => {
-      const rim = rims[ridgeIndex] ?? 0;
-      const bodyInk = mixHex(ink, "#121416", Math.min(1, 0.18 + rim * 0.72));
+    planned.forEach((runs) => {
       for (const run of runs) {
         if (run.role === "line") {
           const placed = run.points.map(place);
           const d = ribbonPath(placed, fallbackWidth(request.period, request.style.textScale || 1) * fit);
-          if (d) body.push(`<path class="ridge-fallback" d="${d}" fill="${ink}"/>`);
+          if (d) body.push(`<path class="ridge-fallback" d="${d}" fill="#000000"/>`);
           continue;
         }
         if (!run.text) continue;
         const size = fontSize * roleScale(run.role);
         ridgeSizes.add(size.toFixed(2));
-        const ridgeInk = run.role === "body" ? bodyInk : mixHex(ink, "#121416", 0.86);
+        const dedication = run.role === "core" || run.role === "secondary";
         const placed = run.points.map(place);
         const glyphs = layoutRun(
-          face,
+          dedication ? boldSource : face,
           run.text,
           placed,
           size,
@@ -193,7 +176,7 @@ export async function renderArtwork(request: RenderRequest) {
         );
         for (const glyph of glyphs) {
           body.push(
-            `<g transform="translate(${glyph.x.toFixed(2)} ${glyph.y.toFixed(2)}) rotate(${glyph.angle.toFixed(2)})"><path d="${glyph.d}" fill="${ridgeInk}"/></g>`,
+            `<g transform="translate(${glyph.x.toFixed(2)} ${glyph.y.toFixed(2)}) rotate(${glyph.angle.toFixed(2)})">${paintGlyph(glyph.d, size, dedication)}</g>`,
           );
         }
       }
@@ -233,11 +216,11 @@ function frameCaption(
   const maxWidth = paperW * 0.86;
   const headerName = style.headerName?.trim() ?? "";
   if (headerName) {
-    const size = fitSize(boldFace, headerName, Math.max(34, Math.round(paperH * 0.04)), 20, maxWidth, 0.02);
+    const size = fitSize(boldFace, headerName, Math.max(48, Math.round(paperH * 0.05)), 24, maxWidth, 0.02);
     parts.push(layoutCentered(boldFace, headerName, size, paperW / 2, topPx * 0.42, 0.02));
     const dates = style.headerDates?.trim() ?? "";
     if (dates) {
-      const dateSize = fitSize(boldFace, dates, Math.max(22, Math.round(paperH * 0.024)), 16, maxWidth, 0.04);
+      const dateSize = fitSize(boldFace, dates, Math.max(30, Math.round(paperH * 0.03)), 18, maxWidth, 0.04);
       parts.push(layoutCentered(boldFace, dates, dateSize, paperW / 2, topPx * 0.78, 0.04));
     }
   } else if (style.title?.trim()) {

@@ -95,6 +95,7 @@ export function packBodyRuns(
   _ceiling: number,
   once = false,
   progress?: BodyProgress,
+  caps?: Map<string, number>,
 ): PackedRun[] {
   const packed: PackedRun[] = [];
   const gapFor = (runIndex: number) => (typeof space === "number" ? space : space(runIndex));
@@ -266,6 +267,7 @@ export function packBodyRuns(
       return true;
     };
 
+    const capOf = (idx: number) => caps?.get(names[idx]) ?? Number.POSITIVE_INFINITY;
     const fillNames = () => {
       if (!names.length) return;
       let guard = 0;
@@ -273,7 +275,7 @@ export function packBodyRuns(
       while (guard++ < room) {
         const floor = Math.min(...slotCount);
         const next = nameCursor.i % names.length;
-        if (slotCount[next] > floor) {
+        if (slotCount[next] > floor || slotCount[next] >= capOf(next)) {
           nameCursor.i += 1;
           continue;
         }
@@ -283,6 +285,7 @@ export function packBodyRuns(
           continue;
         }
         const take = (idx: number) => {
+          if (slotCount[idx] >= capOf(idx)) return false;
           if (!tokensFit([names[idx]])) return false;
           place(names[idx]);
           slotCount[idx] += 1;
@@ -889,15 +892,27 @@ function takeWholeNames(
   cursor: { i: number },
   measure: (word: string) => number,
   gap: number,
+  counts?: number[],
+  caps?: Map<string, number>,
 ) {
   if (!names.length || points.length < 2) return "";
   const length = pathLength(points);
   const start = cursor.i;
   const words: string[] = [];
+  const usedIndex: number[] = [];
   let used = 2;
   let guard = 0;
+  let skips = 0;
   while (guard++ < names.length * 8) {
-    const name = names[cursor.i % names.length];
+    const index = cursor.i % names.length;
+    const name = names[index];
+    const max = caps?.get(name);
+    if (max != null && (counts?.[index] ?? 0) >= max) {
+      cursor.i += 1;
+      if (++skips > names.length) break;
+      continue;
+    }
+    skips = 0;
     const parts = name.split(/\s+/).filter(Boolean);
     if (!parts.length) {
       cursor.i += 1;
@@ -907,12 +922,16 @@ function takeWholeNames(
     for (let i = 0; i < parts.length; i++) need += (words.length + i > 0 ? gap : 0) + measure(parts[i]);
     if (used + need > length - 1.5) break;
     words.push(...parts);
+    usedIndex.push(index);
     used += need;
     cursor.i += 1;
   }
   if (words.length < MIN_BODY_WORDS) {
     cursor.i = start;
     return "";
+  }
+  if (counts) {
+    for (const index of usedIndex) counts[index] = (counts[index] ?? 0) + 1;
   }
   return words.join(" ");
 }
@@ -935,59 +954,69 @@ export function planPortrait(
 ): PlannedRun[][] {
   const pairs: { role: "core" | "secondary"; phrase: string }[] = [];
   const plaque = plaqueFor(ridges, style, period);
-  const usePlaque = Boolean(plaque);
+  const clearance = plaque ? plaqueClearance(period, style.textScale || 1) : 0;
   const corePhrase = [cleanLine(style.centerName), cleanLine(style.centerDetail)].filter(Boolean).join(" ");
   const secondaryPhrase = [cleanLine(style.secondaryName), cleanLine(style.secondaryDetail)].filter(Boolean).join(" ");
-  if (!usePlaque && corePhrase) pairs.push({ role: "core", phrase: corePhrase });
-  if (!usePlaque && secondaryPhrase) pairs.push({ role: "secondary", phrase: secondaryPhrase });
+  // The plaque keeps the six lines. The same dedications also run, bold, on the loops just outside it.
+  if (corePhrase) pairs.push({ role: "core", phrase: corePhrase });
+  if (secondaryPhrase) pairs.push({ role: "secondary", phrase: secondaryPhrase });
 
   const origin = printCore(ridges, period);
-  const ranked = ridges
-    .map((ridge, index) => ({
-      index,
-      distance: medianDistance(ridge.points, origin),
-      length: pathLength(ridge.points),
-    }))
-    .filter((item) => item.length >= period * 4)
-    .sort((a, b) => a.distance - b.distance || b.length - a.length);
+  const ellipseRadius = (point: Pt) => {
+    if (!plaque) return medianDistance([point], origin);
+    return Math.hypot((point.x - plaque.cx) / plaque.rx, (point.y - plaque.cy) / plaque.ry);
+  };
+  const pieceDistance = (points: Pt[]) => {
+    if (!plaque) return medianDistance(points, origin);
+    const radii: number[] = [];
+    for (let i = 0; i < points.length; i += 3) radii.push(ellipseRadius(points[i]));
+    if (!radii.length) return Infinity;
+    radii.sort((a, b) => a - b);
+    return radii[Math.floor(radii.length / 2)];
+  };
+  const candidates: { index: number; run: number; points: Pt[]; distance: number; length: number }[] = [];
+  ridges.forEach((ridge, index) => {
+    uprightRuns(ridge.points).forEach((run, runIndex) => {
+      const pieces = plaque ? outsidePlaque(run, plaque, clearance) : [run];
+      for (const piece of pieces) {
+        const length = pathLength(piece);
+        if (length < period * 4) continue;
+        candidates.push({ index, run: runIndex, points: piece, distance: pieceDistance(piece), length });
+      }
+    });
+  });
+  candidates.sort((a, b) => a.distance - b.distance || b.length - a.length);
 
-  const hosting = new Map<number, { role: RidgeRole; line: string; run: number }[]>();
-  const usedRidges = new Set<number>();
+  const hosting = new Map<number, { role: RidgeRole; line: string; run: number; points: Pt[] }[]>();
+  const usedPieces = new Set<Pt[]>();
   let minDistance = -1;
+  const ringStep = plaque ? 0.28 : period * 0.35;
 
   for (const pair of pairs) {
     const need = measure(pair.phrase, pair.role) + 2.6;
-    let host = -1;
-    let runIndex = -1;
-    let hostDistance = Infinity;
-    for (const item of ranked) {
-      if (usedRidges.has(item.index)) continue;
-      if (minDistance >= 0 && item.distance < minDistance - period * 0.25) continue;
-      const runs = uprightRuns(ridges[item.index].points);
-      let best = -1;
-      let bestLen = 0;
-      runs.forEach((run, index) => {
-        const len = pathLength(run);
-        if (len >= need && len > bestLen) {
-          best = index;
-          bestLen = len;
-        }
-      });
-      if (best < 0) continue;
-      host = item.index;
-      runIndex = best;
-      hostDistance = item.distance;
+    let host: (typeof candidates)[number] | null = null;
+    for (const item of candidates) {
+      if (usedPieces.has(item.points)) continue;
+      if (item.length < need) continue;
+      if (minDistance >= 0 && item.distance < minDistance + ringStep) continue;
+      host = item;
       break;
     }
-    if (host < 0) continue;
-    usedRidges.add(host);
-    minDistance = hostDistance;
-    hosting.set(host, [{ role: pair.role, line: pair.phrase, run: runIndex }]);
+    if (!host) continue;
+    usedPieces.add(host.points);
+    minDistance = host.distance;
+    const marks = hosting.get(host.index) ?? [];
+    marks.push({ role: pair.role, line: pair.phrase, run: host.run, points: host.points });
+    hosting.set(host.index, marks);
   }
 
   const plans: PlannedRun[][] = ridges.map(() => []);
   const slots: { ridge: number; points: Pt[] }[] = [];
-  const clearance = plaque ? plaqueClearance(period, style.textScale || 1) : 0;
+  const samePiece = (a: Pt[], b: Pt[]) => {
+    if (a.length < 2 || b.length < 2) return false;
+    const near = (p: Pt, q: Pt) => Math.hypot(p.x - q.x, p.y - q.y) < 0.75;
+    return near(a[0], b[0]) && near(a[a.length - 1], b[b.length - 1]) && Math.abs(pathLength(a) - pathLength(b)) < 1.5;
+  };
   const keep = (index: number, points: Pt[]) => {
     const pieces = plaque ? outsidePlaque(points, plaque, clearance) : [points];
     for (const piece of pieces) {
@@ -997,19 +1026,28 @@ export function planPortrait(
   ridges.forEach((ridge, index) => {
     const runs = uprightRuns(ridge.points);
     const marks = hosting.get(index) ?? [];
-    const marked = new Set(marks.map((mark) => mark.run));
-    for (const mark of marks) {
-      const slice = centerSlice(runs[mark.run], measure(mark.line, mark.role));
-      if (!slice) {
-        keep(index, runs[mark.run]);
-        continue;
-      }
-      plans[index].push({ points: slice.points, text: mark.line, role: mark.role, order: mark.role === "core" ? -2 : -1 });
-      if (pathLength(slice.head) > period * 0.8) keep(index, slice.head);
-      if (pathLength(slice.tail) > period * 0.8) keep(index, slice.tail);
-    }
     runs.forEach((run, runIndex) => {
-      if (!marked.has(runIndex)) keep(index, run);
+      const owned = marks.filter((mark) => mark.run === runIndex);
+      if (!owned.length) {
+        keep(index, run);
+        return;
+      }
+      const pieces = plaque ? outsidePlaque(run, plaque, clearance) : [run];
+      for (const piece of pieces) {
+        const mark = owned.find((item) => samePiece(item.points, piece));
+        if (!mark) {
+          keep(index, piece);
+          continue;
+        }
+        const slice = centerSlice(piece, measure(mark.line, mark.role));
+        if (!slice) {
+          plans[index].push({ points: piece, text: mark.line, role: mark.role, order: mark.role === "core" ? -2 : -1 });
+          continue;
+        }
+        plans[index].push({ points: slice.points, text: mark.line, role: mark.role, order: mark.role === "core" ? -2 : -1 });
+        if (pathLength(slice.head) > period * 0.8) keep(index, slice.head);
+        if (pathLength(slice.tail) > period * 0.8) keep(index, slice.tail);
+      }
     });
   });
 
@@ -1069,6 +1107,11 @@ export function planPortrait(
   if (group.length) groups.push(group);
   const nameCursor = { i: 0 };
   const verseCursor = { i: 0 };
+  const nameCaps = new Map<string, number>();
+  for (const item of style.nameMax ?? []) {
+    const name = item.name.replace(/\s+/g, " ").trim();
+    if (name) nameCaps.set(name, item.max);
+  }
   const stories = (style.stories ?? []).map((story) => story.replace(/\s+/g, " ").trim()).filter(Boolean);
   const storyCursor = { next: 0 };
   const progress: BodyProgress | undefined = stories.length
@@ -1090,6 +1133,7 @@ export function planPortrait(
       ceiling,
       stories.length > 0,
       progress,
+      nameCaps,
     );
     if (stories.length) fillStories(packed, stories, (word, runIndex) => measure(word, "body"), gap, storyCursor);
     packed.forEach((run, index) => {
@@ -1099,6 +1143,7 @@ export function planPortrait(
   const storiesDone = stories.length > 0 && storyCursor.next >= stories.length;
   const measureBody = (word: string) => measure(word, "body");
   const nameCycle = { i: 0 };
+  const nameCounts = progress?.slotCount ?? source.names.map(() => 0);
   const consumed = new Set<Pt[]>();
   if (storiesDone && source.names.length) {
     let lastText = -1;
@@ -1107,13 +1152,13 @@ export function planPortrait(
     });
     for (let index = lastText + 1; index < placed.length; index++) {
       if (placed[index].text) continue;
-      const text = takeWholeNames(placed[index].points, source.names, nameCycle, measureBody, gap);
+      const text = takeWholeNames(placed[index].points, source.names, nameCycle, measureBody, gap, nameCounts, nameCaps);
       if (text) placed[index].text = text;
     }
     // Gaps left between stories stay out of the story sequence. Their names are drawn after it.
     for (let index = 0; index <= lastText; index++) {
       if (placed[index].text) continue;
-      const text = takeWholeNames(placed[index].points, source.names, nameCycle, measureBody, gap);
+      const text = takeWholeNames(placed[index].points, source.names, nameCycle, measureBody, gap, nameCounts, nameCaps);
       if (!text) continue;
       placed[index].text = text;
       consumed.add(placed[index].points);
@@ -1150,7 +1195,7 @@ export function planPortrait(
     if (storiesDone && used <= length - period * 3) {
       const tail = slicePath(run.points, Math.min(length, used + 2), length);
       if (pathLength(tail) < period * 3) continue;
-      const text = sentenceClosed(run.text) ? takeWholeNames(tail, source.names, nameCycle, measureBody, gap) : "";
+      const text = sentenceClosed(run.text) ? takeWholeNames(tail, source.names, nameCycle, measureBody, gap, nameCounts, nameCaps) : "";
       if (text) {
         const fitted = slicePath(run.points, 0, Math.min(length, used));
         if (fitted.length > 1) plans[run.ridge][plans[run.ridge].length - 1].points = fitted;
@@ -1582,7 +1627,10 @@ export function ellipsePath(cx: number, cy: number, rx: number, ry: number) {
 
 export type PlacedGlyph = { text: string; distance: number; advance: number };
 
-/** Distances along a run for each glyph, using exact advances. Stays inside the path. */
+/**
+ * Distances along a run for each glyph, using exact advances.
+ * A word that does not fit entirely is left off, so a ridge never ends mid-word.
+ */
 export function placeGlyphs(
   text: string,
   length: number,
@@ -1592,13 +1640,21 @@ export function placeGlyphs(
 ) {
   const placed: PlacedGlyph[] = [];
   let dist = 1.2;
-  const tokens = text.split(" ");
+  const tokens = text.split(" ").filter((token) => token.length > 0);
   for (let t = 0; t < tokens.length; t++) {
-    if (t > 0) dist += space;
+    const advances: number[] = [];
+    let width = 0;
     for (const ch of tokens[t]) {
       const advance = Math.max(0.4, advanceOf(ch) + tracking);
-      if (dist + advance > length - 0.6) return placed;
-      placed.push({ text: ch, distance: dist + advance / 2, advance });
+      advances.push(advance);
+      width += advance;
+    }
+    const lead = t > 0 ? space : 0;
+    if (dist + lead + width > length - 0.6) return placed;
+    dist += lead;
+    for (let i = 0; i < tokens[t].length; i++) {
+      const advance = advances[i];
+      placed.push({ text: tokens[t][i], distance: dist + advance / 2, advance });
       dist += advance;
     }
   }

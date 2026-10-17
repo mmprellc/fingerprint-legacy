@@ -93,7 +93,7 @@ export type PrintStyle = {
   headerDates?: string;
   /** Small script signature, bottom right. */
   signature?: string;
-  /** Blank a plaque in the core instead of setting the dedications on ridges. */
+  /** Blank a plaque in the core. The dedications still run, bold, on the loops just outside it. */
   plaque?: boolean;
   /** Plaque lines, in order. When empty, the center, marriage, and secondary fields are used. */
   plaqueLines?: string[];
@@ -108,6 +108,8 @@ export type PrintStyle = {
   marriageDate?: string;
   /** Names along the ridges, one phrase each. Spelled as given. */
   names?: string[];
+  /** Upper bound on how often a listed name may be set, including the repeat cycle. */
+  nameMax?: { name: string; max: number }[];
   /** Whole verses, in order. A long verse continues onto the next ridges. */
   scriptures?: string[];
   /** Whole paragraphs placed after the names and verses. A paragraph that does not fit is left off. */
