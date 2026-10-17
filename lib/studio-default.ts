@@ -2,13 +2,29 @@ import type { PrintStyle } from "./fingerprint/types";
 
 /** Words the sample portrait uses until someone replaces them. Not applied to a photo the customer uploads. */
 export const studioRidgeStyle = {
+  headerName: "Margaret Hale",
+  headerDates: "1942",
+  signature: "Fingerprint Legacy",
+  plaque: true,
   centerName: "Margaret Hale",
   centerDetail: "1942",
   secondaryName: "James Hale",
   secondaryDetail: "the yellow house",
   names: ["Margaret Hale", "James Hale", "Elise Hale", "Elena Voss", "Jonah Ellis"],
   scriptures: ["The Lord bless you and keep you; the Lord make His face shine upon you, and give you peace."],
-} satisfies Pick<PrintStyle, "centerName" | "centerDetail" | "secondaryName" | "secondaryDetail" | "names" | "scriptures">;
+} satisfies Pick<
+  PrintStyle,
+  | "headerName"
+  | "headerDates"
+  | "signature"
+  | "plaque"
+  | "centerName"
+  | "centerDetail"
+  | "secondaryName"
+  | "secondaryDetail"
+  | "names"
+  | "scriptures"
+>;
 
 function cleanList(values: string[] | undefined) {
   return (values ?? []).map((item) => item.trim()).filter(Boolean);
@@ -28,6 +44,8 @@ export function hasDrawableWords(style: Pick<PrintStyle, "names" | "scriptures">
 /** True when the form still holds the sample family, unchanged. */
 export function isSampleRidgeStyle(style: PrintStyle) {
   return (
+    (style.headerName ?? "").trim() === studioRidgeStyle.headerName &&
+    (style.headerDates ?? "").trim() === studioRidgeStyle.headerDates &&
     (style.centerName ?? "").trim() === studioRidgeStyle.centerName &&
     (style.centerDetail ?? "").trim() === studioRidgeStyle.centerDetail &&
     (style.secondaryName ?? "").trim() === studioRidgeStyle.secondaryName &&
@@ -42,11 +60,16 @@ export function clearSampleRidgeStyle(style: PrintStyle): PrintStyle {
   if (!isSampleRidgeStyle(style)) return style;
   return {
     ...style,
+    headerName: "",
+    headerDates: "",
     centerName: "",
     centerDetail: "",
     secondaryName: "",
     secondaryDetail: "",
+    marriage: "",
+    marriageDate: "",
     names: [],
     scriptures: [],
+    stories: [],
   };
 }

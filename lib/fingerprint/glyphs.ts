@@ -38,14 +38,53 @@ export type LaidGlyph = {
   baseline: number;
 };
 
-export function layoutRun(font: GlyphFont, text: string, points: Pt[], fontSize: number, trackingEm = 0.05) {
+/** Width of a word or a short phrase, using the same advances `placeGlyphs` draws. */
+export function glyphWidth(font: GlyphFont, word: string, fontSize: number, tracking: number, space: number) {
+  const parts = word.split(" ").filter((part) => part.length > 0);
+  let width = 0;
+  parts.forEach((part, index) => {
+    if (index) width += space;
+    for (const ch of part) width += Math.max(0.4, advanceOf(font, ch, fontSize) + tracking);
+  });
+  return width;
+}
+
+/** Bold companion of the ridge face, same size, for the dedication loops. */
+export function emphasisFaceFile(bodyFile: string) {
+  return bodyFile.includes("Baskerville") ? "LibreBaskerville-Bold.ttf" : "CormorantGaramond-Bold.ttf";
+}
+
+/**
+ * Extra ink around a dedication glyph, in ems. Cormorant Bold is only about
+ * one pixel heavier than Regular once the print is rasterized, so the center
+ * loops need a filled offset to read as bold. The offset stays well under the
+ * sidebearing, and the cap height is unchanged.
+ */
+const DEDICATION_EMPHASIS_EM = 0.03;
+
+/** Filled copies of one glyph. Dedication runs are offset; body runs are the outline alone. */
+export function paintGlyph(d: string, fontSize: number, emphasis: boolean) {
+  const fill = `<path d="${d}" fill="#000000"/>`;
+  if (!emphasis) return fill;
+  const dx = fontSize * DEDICATION_EMPHASIS_EM;
+  const dy = dx * 0.72;
+  const copies = [
+    [dx, 0],
+    [-dx, 0],
+    [0, dy],
+    [0, -dy],
+  ].map(([x, y]) => `<path d="${d}" transform="translate(${x.toFixed(2)} ${y.toFixed(2)})" fill="#000000"/>`);
+  return fill + copies.join("");
+}
+
+export function layoutRun(font: GlyphFont, text: string, points: Pt[], fontSize: number, trackingEm = 0.04, gapEm = 0.16) {
   const tracking = -fontSize * trackingEm;
   const shift = baselineShift(font, fontSize);
   const glyphs = placeGlyphs(
     text,
     pathLength(points),
     (ch) => advanceOf(font, ch, fontSize),
-    fontSize * 0.16,
+    fontSize * gapEm,
     tracking,
   );
   const placed: LaidGlyph[] = [];

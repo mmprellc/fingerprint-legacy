@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import type { PreviewPrint } from "@/lib/fingerprint/preview";
+import { readPrintStyle } from "@/lib/fingerprint/read-style";
 import { renderStudioPortrait } from "@/lib/fingerprint/studio-art";
-import { DEFAULT_FONT, DEFAULT_PRESET, type PrintStyle, type Ridge } from "@/lib/fingerprint/types";
+import type { PrintStyle, Ridge } from "@/lib/fingerprint/types";
 export const runtime = "nodejs";
 export const maxDuration = 300;
 
@@ -37,20 +38,7 @@ export async function POST(request: Request) {
   if (!prints.length) {
     return NextResponse.json({ error: "No ridges to draw." }, { status: 400 });
   }
-  const style: PrintStyle = {
-    font: body?.style?.font === "baskerville" ? "baskerville" : DEFAULT_FONT,
-    preset: typeof body?.style?.preset === "string" ? body.style.preset : DEFAULT_PRESET,
-    textScale: typeof body?.style?.textScale === "number" ? body.style.textScale : 1,
-    title: body?.style?.title || "",
-    script: body?.style?.script || "",
-    footer: body?.style?.footer,
-    centerName: body?.style?.centerName,
-    centerDetail: body?.style?.centerDetail,
-    secondaryName: body?.style?.secondaryName,
-    secondaryDetail: body?.style?.secondaryDetail,
-    names: Array.isArray(body?.style?.names) ? body.style.names.filter((item): item is string => typeof item === "string") : [],
-    scriptures: Array.isArray(body?.style?.scriptures) ? body.style.scriptures.filter((item): item is string => typeof item === "string") : [],
-  };
+  const style = readPrintStyle(body?.style);
   try {
     const portraitPng = await renderStudioPortrait(prints, style, Number(body?.period) || 12);
     return NextResponse.json({ portraitPng });
