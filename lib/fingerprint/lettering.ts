@@ -70,8 +70,20 @@ export function wordsOf(lines: string[]) {
   return words.length ? words : ["Always"];
 }
 
-/** Sits between names, and between a name and a verse. It never appears inside a verse. */
+/** One centered dot between names. It is not a filler, and it never appears inside a verse or a story. */
 export const RIDGE_DIVIDER = "·";
+
+export type RidgeToken = { text: string; name: boolean };
+
+/** Names take the dot. Every other pair of words keeps a single word space, at the same gap. */
+export function joinRidgeTokens(parts: RidgeToken[]) {
+  let text = "";
+  for (let i = 0; i < parts.length; i++) {
+    if (i > 0) text += parts[i - 1].name && parts[i].name ? ` ${RIDGE_DIVIDER} ` : " ";
+    text += parts[i].text;
+  }
+  return text;
+}
 
 function verseWords(verse: string) {
   return verse.split(/\s+/).filter(Boolean);
@@ -167,7 +179,7 @@ export function packBodyRuns(
 
   const wholeVerse = new Set(versesAt.map((words) => words.join(" ")));
   const acceptable = (text: string) => {
-    const count = text.split(/\s+/).filter(Boolean).length;
+    const count = text.split(/\s+/).filter((word) => word && word !== RIDGE_DIVIDER).length;
     if (count >= MIN_BODY_WORDS) return true;
     return count > 0 && wholeVerse.has(text);
   };
@@ -213,22 +225,27 @@ export function packBodyRuns(
     const length = pathLength(points);
     const gap = gapFor(runIndex);
     let used = 2;
-    const parts: string[] = [];
-    const place = (token: string) => {
-      const need = (parts.length ? gap : 0) + measure(token, runIndex);
+    const parts: RidgeToken[] = [];
+    const leadOf = (name: boolean, previous: RidgeToken | undefined) => {
+      if (!previous) return 0;
+      if (previous.name && name) return gap + measure(RIDGE_DIVIDER, runIndex) + gap;
+      return gap;
+    };
+    const place = (token: string, name = false) => {
+      const need = leadOf(name, parts[parts.length - 1]) + measure(token, runIndex);
       if (need > length - used - 1.5) return false;
-      parts.push(token);
+      parts.push({ text: token, name });
       used += need;
       return true;
     };
-    const tokensFit = (tokens: string[]) => {
+    const tokensFit = (tokens: RidgeToken[]) => {
       let trial = used;
-      let count = parts.length;
+      const shadow = parts.slice();
       for (const token of tokens) {
-        const need = (count ? gap : 0) + measure(token, runIndex);
+        const need = leadOf(token.name, shadow[shadow.length - 1]) + measure(token.text, runIndex);
         if (need > length - trial - 1.5) return false;
         trial += need;
-        count += 1;
+        shadow.push(token);
       }
       return true;
     };
@@ -286,8 +303,8 @@ export function packBodyRuns(
         }
         const take = (idx: number) => {
           if (slotCount[idx] >= capOf(idx)) return false;
-          if (!tokensFit([names[idx]])) return false;
-          place(names[idx]);
+          if (!tokensFit([{ text: names[idx], name: true }])) return false;
+          place(names[idx], true);
           slotCount[idx] += 1;
           namesSinceVerse += 1;
           if (idx === nameCursor.i % names.length) nameCursor.i += 1;
@@ -320,7 +337,7 @@ export function packBodyRuns(
       if (verseWord === 0) {
         const mid = snap();
         fillNames();
-        if (!acceptable(parts.join(" "))) restore(mid);
+        if (!acceptable(joinRidgeTokens(parts))) restore(mid);
       }
     } else if (words) {
       const plan = versePlan(runIndex, words);
@@ -332,7 +349,7 @@ export function packBodyRuns(
         if (verseWord === 0) {
           const mid = snap();
           fillNames();
-          if (!acceptable(parts.join(" "))) restore(mid);
+          if (!acceptable(joinRidgeTokens(parts))) restore(mid);
         }
       } else {
         fillNames();
@@ -341,14 +358,14 @@ export function packBodyRuns(
       fillNames();
     }
 
-    const text = parts.join(" ");
+    const text = joinRidgeTokens(parts);
     if (!acceptable(text)) {
       restore(saved);
       // Eight words will not fit. One complete short verse still may, and that exemption is already the rule.
       const verse = versesAt.length ? versesAt[verseAt % versesAt.length] : null;
       if (verse && verse.length < MIN_BODY_WORDS && verseWord === 0 && legalTake(runIndex, verse, 0) === verse.length) {
-        if (placeVerseWords(verse, verse.length) && acceptable(parts.join(" "))) {
-          packed.push({ points, text: parts.join(" ") });
+        if (placeVerseWords(verse, verse.length) && acceptable(joinRidgeTokens(parts))) {
+          packed.push({ points, text: joinRidgeTokens(parts) });
           continue;
         }
         restore(saved);
@@ -899,6 +916,7 @@ function takeWholeNames(
   const length = pathLength(points);
   const start = cursor.i;
   const words: string[] = [];
+  const kept: string[] = [];
   const usedIndex: number[] = [];
   let used = 2;
   let guard = 0;
@@ -918,10 +936,11 @@ function takeWholeNames(
       cursor.i += 1;
       continue;
     }
-    let need = 0;
-    for (let i = 0; i < parts.length; i++) need += (words.length + i > 0 ? gap : 0) + measure(parts[i]);
+    let need = kept.length ? gap + measure(RIDGE_DIVIDER) + gap : 0;
+    for (let i = 0; i < parts.length; i++) need += (i > 0 ? gap : 0) + measure(parts[i]);
     if (used + need > length - 1.5) break;
     words.push(...parts);
+    kept.push(name);
     usedIndex.push(index);
     used += need;
     cursor.i += 1;
@@ -933,7 +952,7 @@ function takeWholeNames(
   if (counts) {
     for (const index of usedIndex) counts[index] = (counts[index] ?? 0) + 1;
   }
-  return words.join(" ");
+  return kept.join(` ${RIDGE_DIVIDER} `);
 }
 
 function sentenceClosed(text: string) {

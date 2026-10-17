@@ -245,10 +245,18 @@ function ridgeRunTexts(svg: string) {
   return texts;
 }
 
-/** Short ridges stay blank. A dot, or a ridge of only dots, is filler. */
+/**
+ * A centered dot may separate names. A ridge that is only the dot, or a dot
+ * standing in for a missing name, is still filler.
+ */
 function noFillers(svg: string): Check {
   const runs = ridgeRunTexts(svg);
-  const dotted = runs.filter((text) => text.split(/\s+/).some((word) => word === RIDGE_DIVIDER));
+  const dotted = runs.filter((text) => {
+    const tokens = text.split(/\s+/).filter(Boolean);
+    if (!tokens.some((word) => word === RIDGE_DIVIDER)) return false;
+    const real = tokens.filter((word) => word !== RIDGE_DIVIDER);
+    return real.length < 2;
+  });
   if (dotted.length) {
     return {
       id: "no-fillers",
