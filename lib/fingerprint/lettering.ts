@@ -290,6 +290,7 @@ export function packBodyRuns(
       let guard = 0;
       const room = Math.ceil(length / 8) + names.length + 4;
       while (guard++ < room) {
+        if (once && slotCount.every((count) => count >= 1)) break;
         const floor = Math.min(...slotCount);
         const next = nameCursor.i % names.length;
         if (slotCount[next] > floor || slotCount[next] >= capOf(next)) {
@@ -783,11 +784,104 @@ function sentenceWords(paragraph: string) {
 }
 
 /**
+ * Lay words across ridges, filling each ridge up to the last word that fits.
+ * A ridge stays at least eight words. The final few words of a story stay
+ * together when splitting them would leave a short tail.
+ */
+function flowWords(
+  slots: Pt[][],
+  texts: string[],
+  start: number,
+  words: string[],
+  measure: (word: string) => number,
+  gap: number,
+) {
+  const wordsOn = (slotIndex: number) => (texts[slotIndex] ? texts[slotIndex].split(/\s+/).filter(Boolean) : []);
+  const fitCount = (slotIndex: number, pending: string[]) => {
+    if (slotIndex < 0 || slotIndex >= slots.length) return 0;
+    const prior = wordsOn(slotIndex);
+    const length = pathLength(slots[slotIndex]);
+    let used = 2;
+    prior.forEach((word, index) => {
+      used += (index ? gap : 0) + measure(word);
+    });
+    let count = 0;
+    for (const word of pending) {
+      const need = (prior.length + count ? gap : 0) + measure(word);
+      if (used + need > length - 1.5) break;
+      used += need;
+      count += 1;
+    }
+    return count;
+  };
+  const snapshot = texts.slice();
+  let slot = start;
+  let at = 0;
+  let last = -1;
+  while (at < words.length && slot < slots.length) {
+    const pending = words.slice(at);
+    const prior = wordsOn(slot);
+    const fit = fitCount(slot, pending);
+    const minNew = prior.length >= MIN_BODY_WORDS ? 1 : MIN_BODY_WORDS;
+    if (fit < minNew) {
+      slot += 1;
+      continue;
+    }
+    let take = Math.min(fit, pending.length);
+    const after = pending.length - take;
+    if (after > 0 && after < MIN_BODY_WORDS) {
+      const shrunk = pending.length - MIN_BODY_WORDS;
+      if (shrunk >= 1 && shrunk <= fit && prior.length + shrunk >= MIN_BODY_WORDS) take = shrunk;
+      else if (!prior.length) {
+        slot += 1;
+        continue;
+      }
+    }
+    texts[slot] = prior.concat(pending.slice(0, take)).join(" ");
+    at += take;
+    last = slot;
+    slot += 1;
+  }
+  if (at < words.length && words.length - at < MIN_BODY_WORDS) {
+    const rest = words.slice(at);
+    for (let i = last >= 0 ? last : start; i >= start; i--) {
+      if (!texts[i]) continue;
+      if (fitCount(i, rest) < rest.length) continue;
+      texts[i] = wordsOn(i).concat(rest).join(" ");
+      at = words.length;
+      last = i;
+      break;
+    }
+  }
+  if (at < words.length) {
+    for (let i = 0; i < texts.length; i++) texts[i] = snapshot[i];
+    return { slot: start, placed: 0 };
+  }
+  let resume = last + 1;
+  if (last >= 0 && fitCount(last, Array(MIN_BODY_WORDS).fill("faith")) >= MIN_BODY_WORDS) resume = last;
+  return { slot: resume, placed: at };
+}
+
+function storyWordsFlat(story: string) {
+  return sentenceWords(story).flatMap((sentence) => sentence);
+}
+
+function sentenceWordEnds(story: string) {
+  const sentences = sentenceWords(story).filter((sentence) => sentence.length);
+  const ends: number[] = [];
+  let count = 0;
+  for (const sentence of sentences) {
+    count += sentence.length;
+    ends.push(count);
+  }
+  return ends;
+}
+
+/**
  * Lay each story across the ridges that follow the names and verses.
- * A paragraph is used whole. A sentence may continue onto the next ridge in
- * pieces of at least eight words, and it is never left unfinished. A short
- * sentence joins the next whole sentences until the line is long enough.
- * A paragraph that cannot finish is left off. Thin lines are drawn only after every story is placed.
+ * A paragraph is used whole. Words continue from one ridge to the next, and a
+ * ridge is filled up to the last word that fits. A paragraph that cannot finish
+ * is left off.
  */
 export function fillStories(
   packed: PackedRun[],
@@ -801,162 +895,62 @@ export function fillStories(
     if (run.text) lastText = index;
   });
   const open = packed.map((run, index) => ({ run, index })).filter((item) => item.index > lastText && !item.run.text);
-  let at = 0;
-  const fits = (runIndex: number, words: string[]) => {
-    const length = pathLength(packed[runIndex].points);
-    let used = 2;
-    for (let i = 0; i < words.length; i++) {
-      used += (i ? gap : 0) + measure(words[i], runIndex);
-      if (used > length - 1.5) return false;
-    }
-    return words.length > 0;
-  };
-
-  const wordsThatFit = (runIndex: number, words: string[], from: number) => {
-    let count = 0;
-    while (from + count < words.length && fits(runIndex, words.slice(from, from + count + 1))) count += 1;
-    return count;
-  };
-  // A sentence may cross ridges. Each piece stays at least eight words, and the sentence is finished.
-  const legalChunk = (runIndex: number, words: string[], from: number) => {
-    const remain = words.length - from;
-    if (remain < MIN_BODY_WORDS) return 0;
-    const fit = wordsThatFit(runIndex, words, from);
-    if (fit >= remain) return remain;
-    let take = fit;
-    if (remain - take < MIN_BODY_WORDS) take = remain - MIN_BODY_WORDS;
-    if (take < MIN_BODY_WORDS || take > fit) return 0;
-    return take;
-  };
-
-  while (cursor.next < stories.length && at < open.length) {
-    const sentences = sentenceWords(stories[cursor.next]).filter((words) => words.length);
-    const startAt = at;
-    const snapshot = open.map((item) => ({ text: item.run.text, line: Boolean(item.run.line) }));
-    let sentenceAt = 0;
-    let wordAt = 0;
-    let failed = false;
-    while (sentenceAt < sentences.length) {
-      let placed = false;
-      if (wordAt === 0) {
-        for (let look = at; look < open.length; look++) {
-          const runIndex = open[look].index;
-          const words: string[] = [];
-          let take = 0;
-          while (sentenceAt + take < sentences.length) {
-            const trial = words.concat(sentences[sentenceAt + take]);
-            if (!fits(runIndex, trial)) break;
-            words.push(...sentences[sentenceAt + take]);
-            take += 1;
-          }
-          if (words.length >= MIN_BODY_WORDS) {
-            open[look].run.text = words.join(" ");
-            at = look + 1;
-            sentenceAt += take;
-            placed = true;
-            break;
-          }
-          const sentence = sentences[sentenceAt];
-          const count = legalChunk(runIndex, sentence, 0);
-          if (!count || count >= sentence.length) continue;
-          open[look].run.text = sentence.slice(0, count).join(" ");
-          wordAt = count;
-          at = look + 1;
-          placed = true;
-          break;
-        }
-      } else {
-        const sentence = sentences[sentenceAt];
-        for (let look = at; look < open.length; look++) {
-          const count = legalChunk(open[look].index, sentence, wordAt);
-          if (!count) continue;
-          open[look].run.text = sentence.slice(wordAt, wordAt + count).join(" ");
-          wordAt += count;
-          at = look + 1;
-          if (wordAt >= sentence.length) {
-            wordAt = 0;
-            sentenceAt += 1;
-          }
-          placed = true;
-          break;
-        }
-      }
-      if (!placed) {
-        failed = true;
-        break;
-      }
-    }
-    if (failed || sentenceAt < sentences.length || wordAt !== 0) {
-      open.forEach((item, index) => {
-        item.run.text = snapshot[index]?.text ?? "";
-        item.run.line = snapshot[index]?.line ?? false;
-      });
-      at = startAt;
-      break;
-    }
+  const points = open.map((item) => item.run.points);
+  const texts = points.map(() => "");
+  const width = (word: string) => measure(word, 0);
+  let slot = 0;
+  while (cursor.next < stories.length && slot < points.length) {
+    const laid = flowWords(points, texts, slot, storyWordsFlat(stories[cursor.next]), width, gap);
+    if (!laid.placed) break;
+    slot = laid.slot;
     cursor.next += 1;
   }
+  open.forEach((item, index) => {
+    if (texts[index]) item.run.text = texts[index];
+  });
 }
 
 /**
- * As many whole names as the ridge can hold, in list order, at least eight words.
- * A name that does not fit stays for the next ridge. Nothing is split, and a short
- * remainder is left blank so the line never becomes a fragment.
+ * After the six stories have been set once, repeat them in order on the ridges
+ * that are still empty. A paragraph stays whole. The last one may stop after a
+ * complete sentence when the ridges run out, and it never stops mid-word.
  */
-function takeWholeNames(
-  points: Pt[],
-  names: string[],
-  cursor: { i: number },
+function cycleStories(
+  slots: Pt[][],
+  stories: string[],
   measure: (word: string) => number,
   gap: number,
-  counts?: number[],
-  caps?: Map<string, number>,
 ) {
-  if (!names.length || points.length < 2) return "";
-  const length = pathLength(points);
-  const start = cursor.i;
-  const words: string[] = [];
-  const kept: string[] = [];
-  const usedIndex: number[] = [];
-  let used = 2;
+  const texts = slots.map(() => "");
+  if (!stories.length || !slots.length) return { texts, whole: 0 };
+  let slot = 0;
+  let storyIndex = 0;
   let guard = 0;
-  let skips = 0;
-  while (guard++ < names.length * 8) {
-    const index = cursor.i % names.length;
-    const name = names[index];
-    const max = caps?.get(name);
-    if (max != null && (counts?.[index] ?? 0) >= max) {
-      cursor.i += 1;
-      if (++skips > names.length) break;
+  while (slot < slots.length && guard++ < slots.length * 3 + stories.length) {
+    const story = stories[storyIndex % stories.length];
+    const whole = flowWords(slots, texts, slot, storyWordsFlat(story), measure, gap);
+    if (whole.placed) {
+      slot = whole.slot;
+      storyIndex += 1;
       continue;
     }
-    skips = 0;
-    const parts = name.split(/\s+/).filter(Boolean);
-    if (!parts.length) {
-      cursor.i += 1;
-      continue;
+    const snapshot = texts.slice();
+    const words = storyWordsFlat(story);
+    let bestTexts: string[] | null = null;
+    let bestSlot = slot;
+    for (const end of sentenceWordEnds(story)) {
+      for (let i = 0; i < texts.length; i++) texts[i] = snapshot[i];
+      const partial = flowWords(slots, texts, slot, words.slice(0, end), measure, gap);
+      if (!partial.placed) break;
+      bestTexts = texts.slice();
+      bestSlot = partial.slot;
     }
-    let need = kept.length ? gap + measure(RIDGE_DIVIDER) + gap : 0;
-    for (let i = 0; i < parts.length; i++) need += (i > 0 ? gap : 0) + measure(parts[i]);
-    if (used + need > length - 1.5) break;
-    words.push(...parts);
-    kept.push(name);
-    usedIndex.push(index);
-    used += need;
-    cursor.i += 1;
+    if (!bestTexts) break;
+    for (let i = 0; i < texts.length; i++) texts[i] = bestTexts[i];
+    slot = bestSlot;
+    break;
   }
-  if (words.length < MIN_BODY_WORDS) {
-    cursor.i = start;
-    return "";
-  }
-  if (counts) {
-    for (const index of usedIndex) counts[index] = (counts[index] ?? 0) + 1;
-  }
-  return kept.join(` ${RIDGE_DIVIDER} `);
-}
-
-function sentenceClosed(text: string) {
-  return /[.!?]["”']*$/.test(text.trim());
+  return { texts, whole: storyIndex };
 }
 
 /**
@@ -1132,7 +1126,6 @@ export function planPortrait(
     if (name) nameCaps.set(name, item.max);
   }
   const stories = (style.stories ?? []).map((story) => story.replace(/\s+/g, " ").trim()).filter(Boolean);
-  const storyCursor = { next: 0 };
   const progress: BodyProgress | undefined = stories.length
     ? { verseAt: 0, verseWord: 0, owed: source.verses.length, slotCount: source.names.map(() => 0), namesSinceVerse: 0 }
     : undefined;
@@ -1154,35 +1147,11 @@ export function planPortrait(
       progress,
       nameCaps,
     );
-    if (stories.length) fillStories(packed, stories, (word, runIndex) => measure(word, "body"), gap, storyCursor);
     packed.forEach((run, index) => {
       placed.push({ ridge: bodySlots[index].ridge, points: run.points, text: run.text });
     });
   }
-  const storiesDone = stories.length > 0 && storyCursor.next >= stories.length;
   const measureBody = (word: string) => measure(word, "body");
-  const nameCycle = { i: 0 };
-  const nameCounts = progress?.slotCount ?? source.names.map(() => 0);
-  const consumed = new Set<Pt[]>();
-  if (storiesDone && source.names.length) {
-    let lastText = -1;
-    placed.forEach((run, index) => {
-      if (run.text) lastText = index;
-    });
-    for (let index = lastText + 1; index < placed.length; index++) {
-      if (placed[index].text) continue;
-      const text = takeWholeNames(placed[index].points, source.names, nameCycle, measureBody, gap, nameCounts, nameCaps);
-      if (text) placed[index].text = text;
-    }
-    // Gaps left between stories stay out of the story sequence. Their names are drawn after it.
-    for (let index = 0; index <= lastText; index++) {
-      if (placed[index].text) continue;
-      const text = takeWholeNames(placed[index].points, source.names, nameCycle, measureBody, gap, nameCounts, nameCaps);
-      if (!text) continue;
-      placed[index].text = text;
-      consumed.add(placed[index].points);
-    }
-  }
   const kept: Pt[][] = [];
   const keptSamples: Pt[] = [];
   const remember = (points: Pt[]) => {
@@ -1197,37 +1166,64 @@ export function planPortrait(
     });
     return used;
   };
-  const tails: { ridge: number; points: Pt[] }[] = [];
-  const deferred: { ridge: number; points: Pt[]; text: string }[] = [];
-  for (const run of placed) {
-    if (!run.text) continue;
-    if (consumed.has(run.points)) {
-      deferred.push({ ridge: run.ridge, points: run.points, text: run.text });
-      continue;
+  type StorySlot = { ridge: number; points: Pt[]; placedIndex: number; tail: boolean };
+  const storySlots: StorySlot[] = [];
+  if (stories.length) {
+    placed.forEach((run, index) => {
+      if (run.text) return;
+      storySlots.push({ ridge: run.ridge, points: run.points, placedIndex: index, tail: false });
+    });
+    placed.forEach((run, index) => {
+      if (!run.text) return;
+      const length = pathLength(run.points);
+      const used = usedLength(run.text);
+      if (used > length - period * 3) return;
+      const tail = slicePath(run.points, Math.min(length, used + 2), length);
+      if (pathLength(tail) < period * 3) return;
+      storySlots.push({ ridge: run.ridge, points: tail, placedIndex: index, tail: true });
+    });
+  }
+  const storyCycle = stories.length ? cycleStories(storySlots.map((slot) => slot.points), stories, measureBody, gap) : { texts: [], whole: 0 };
+  const storiesDone = storyCycle.whole >= stories.length;
+  const storyFill = storyCycle.texts;
+  const shortened = new Map<number, Pt[]>();
+  const filledEmpty = new Set<number>();
+  const cyclePlans: { ridge: number; points: Pt[]; text: string }[] = [];
+  storySlots.forEach((slot, index) => {
+    const text = storyFill[index] ?? "";
+    if (!text) return;
+    if (slot.tail) {
+      const run = placed[slot.placedIndex];
+      const length = pathLength(run.points);
+      const used = usedLength(run.text);
+      const fitted = slicePath(run.points, 0, Math.min(length, used));
+      if (fitted.length > 1) shortened.set(slot.placedIndex, fitted);
+    } else {
+      filledEmpty.add(slot.placedIndex);
     }
+    cyclePlans.push({ ridge: slot.ridge, points: slot.points, text });
+  });
+  const tails: { ridge: number; points: Pt[] }[] = [];
+  placed.forEach((run, index) => {
+    if (!run.text) return;
     const length = pathLength(run.points);
     const used = usedLength(run.text);
-    const head = used >= length * 0.82 ? run.points : slicePath(run.points, 0, Math.min(length, used));
-    const bodyPoints = run.points;
-    plans[run.ridge].push({ points: bodyPoints, text: run.text, role: "body", order: order++ });
-    remember(head.length > 1 ? head : run.points);
+    const points = shortened.get(index) ?? run.points;
+    const head = used >= length * 0.82 ? points : slicePath(run.points, 0, Math.min(length, used));
+    plans[run.ridge].push({ points, text: run.text, role: "body", order: order++ });
+    remember(head.length > 1 ? head : points);
+    if (shortened.has(index)) return;
     if (storiesDone && used <= length - period * 3) {
       const tail = slicePath(run.points, Math.min(length, used + 2), length);
-      if (pathLength(tail) < period * 3) continue;
-      const text = sentenceClosed(run.text) ? takeWholeNames(tail, source.names, nameCycle, measureBody, gap, nameCounts, nameCaps) : "";
-      if (text) {
-        const fitted = slicePath(run.points, 0, Math.min(length, used));
-        if (fitted.length > 1) plans[run.ridge][plans[run.ridge].length - 1].points = fitted;
-        deferred.push({ ridge: run.ridge, points: tail, text });
-      } else if (pathLength(tail) >= period * 2.4) tails.push({ ridge: run.ridge, points: tail });
-      continue;
+      if (pathLength(tail) >= period * 2.4) tails.push({ ridge: run.ridge, points: tail });
+      return;
     }
     if (!storiesDone && plaque && used < length - period * 2.4) {
       const tail = slicePath(run.points, Math.min(length, used + 2), length);
       if (pathLength(tail) >= period * 2.4) tails.push({ ridge: run.ridge, points: tail });
     }
-  }
-  for (const extra of deferred) {
+  });
+  for (const extra of cyclePlans) {
     const length = pathLength(extra.points);
     const used = usedLength(extra.text);
     const head = used >= length * 0.82 ? extra.points : slicePath(extra.points, 0, Math.min(length, used));
@@ -1248,7 +1244,7 @@ export function planPortrait(
     const leftovers = [
       ...(storiesDone
         ? [
-            ...placed.filter((run) => !run.text).map((run) => ({ ridge: run.ridge, points: run.points })),
+            ...placed.flatMap((run, index) => (!run.text && !filledEmpty.has(index) ? [{ ridge: run.ridge, points: run.points }] : [])),
             ...tails.map((tail) => ({ ridge: tail.ridge, points: tail.points })),
           ]
         : tails.map((tail) => ({ ridge: tail.ridge, points: tail.points }))),

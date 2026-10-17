@@ -61,7 +61,7 @@ export const randyCzyzStyle: PrintStyle = {
   names: RANDY_CZYZ_NAMES,
   nameMax: [
     { name: "Hanadi Czyz", max: 1 },
-    { name: "Adalis Czyz", max: 2 },
+    { name: "Adalis Czyz", max: 1 },
   ],
   scriptures: RANDY_CZYZ_SCRIPTURES,
   ...(RANDY_CZYZ_STORIES.length ? { stories: RANDY_CZYZ_STORIES } : {}),
