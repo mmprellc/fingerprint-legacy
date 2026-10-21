@@ -504,7 +504,7 @@ summary { cursor: pointer; }
 .proof { display: grid; gap: 1.5rem; }
 .proof-toolbar, .proof-actions, .name-row, .version-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
 .proof-zoom { overflow: auto; background: white; border: 1px solid var(--line); max-height: 78vh; }
-.proof-zoom img { margin: 0 auto; }
+.proof-zoom img, .compare img { width: 100%; height: auto; margin: 0 auto; }
 .proof-warn { color: #6b3a2a; }
 .proof-ok { color: var(--charcoal); }
 .version { width: 8rem; background: transparent; border: 1px solid var(--line); padding: 0.3rem; text-align: left; }

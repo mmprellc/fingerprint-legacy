@@ -7,6 +7,13 @@ import { saveDesign, type Design, type ProofVersion } from "../store";
 import { capacityLine, contentWords, ridgeCapacity } from "./capacity";
 import { proofWarnings } from "./quality";
 
+/** Screen proof of a sized print, long edge about 1600px. The approved file stays 300 DPI. */
+function proofDpi(inches: [number, number] | null | undefined) {
+  if (!inches) return 72;
+  const long = Math.max(inches[0], inches[1]);
+  return Math.min(160, Math.max(72, Math.round(1600 / long)));
+}
+
 async function crop(png: Buffer, leftRatio: number, topRatio: number, widthRatio: number, heightRatio: number) {
   const meta = await sharp(png).metadata();
   const width = meta.width || 1;
@@ -39,7 +46,7 @@ export async function recordVersion(
     prints: design.prints,
     style: input.style,
     period: design.period,
-    dpi: 36,
+    dpi: proofDpi(size.inches),
     inches: size.inches,
     frame: product.id === "framed",
   });

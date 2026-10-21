@@ -15,13 +15,13 @@ export function FamilyComment({ id, token }: { id: string; token: string }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ author, text, token }),
     });
-    const payload = (await response.json()) as { error?: string };
-    if (!response.ok) {
+    const payload = (await response.json()) as { error?: string; comment?: { author: string; text: string } };
+    if (!response.ok || !payload.comment) {
       setNote(payload.error || "The comment could not be saved.");
       return;
     }
     setText("");
-    setNote("Saved. Refresh the page to see it with the others.");
+    setNote(`${payload.comment.author}: ${payload.comment.text}`);
   }
 
   return (
