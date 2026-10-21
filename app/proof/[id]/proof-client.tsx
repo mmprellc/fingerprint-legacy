@@ -21,6 +21,7 @@ export type ProofModel = {
   capacity: string;
   llmReady: boolean;
   sizes: { id: string; label: string }[];
+  products: { id: string; name: string; sizes: { id: string; label: string }[] }[];
 };
 
 function rowsFrom(style: PrintStyle): NameRow[] {
@@ -75,9 +76,10 @@ type Draft = {
   nameGap: "dot" | "space";
   textScale: number;
   sizeId: string;
+  productId: string;
 };
 
-function draftFrom(style: PrintStyle, sizeId: string): Draft {
+function draftFrom(style: PrintStyle, sizeId: string, productId: string): Draft {
   return {
     headerName: style.headerName ?? "",
     headerDates: style.headerDates ?? "",
@@ -96,6 +98,7 @@ function draftFrom(style: PrintStyle, sizeId: string): Draft {
     nameGap: style.nameGap === "space" ? "space" : "dot",
     textScale: (style.textScale || 1) < 0.82 ? 0.77 : style.textScale || 0.86,
     sizeId,
+    productId,
   };
 }
 
@@ -111,7 +114,7 @@ export function ProofClient({ model }: { model: ProofModel }) {
   const [compare, setCompare] = useState(model.versions.at(-1)?.number ?? 1);
   const [zoom, setZoom] = useState(1);
   const [closeup, setCloseup] = useState<"print" | "core" | "ridge">("print");
-  const [draft, setDraft] = useState<Draft>(() => draftFrom(model.style, model.sizeId));
+  const [draft, setDraft] = useState<Draft>(() => draftFrom(model.style, model.sizeId, model.productId));
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [request, setRequest] = useState("");
@@ -128,7 +131,7 @@ export function ProofClient({ model }: { model: ProofModel }) {
 
   function applyVersion(version: ProofVersion) {
     setCurrent(version.number);
-    setDraft(draftFrom(version.style, version.sizeId));
+    setDraft(draftFrom(version.style, version.sizeId, version.productId));
     setCapacity(model.capacity);
   }
 
@@ -140,7 +143,7 @@ export function ProofClient({ model }: { model: ProofModel }) {
       const response = await fetch(`/api/designs/${model.id}/revise`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ style, sizeId: draft.sizeId, productId: model.productId, note }),
+        body: JSON.stringify({ style, sizeId: draft.sizeId, productId: draft.productId, note }),
       });
       const payload = await readJson<{ error?: string; version?: ProofVersion; capacity?: string }>(response);
       if (!response.ok || !payload.version) throw new Error(payload.error || "The revision could not be saved.");
@@ -295,9 +298,17 @@ export function ProofClient({ model }: { model: ProofModel }) {
             <option value="small">Smaller</option>
           </select>
         </label>
+        <label className="field"><span>Format</span>
+          <select aria-label="Format" value={draft.productId} onChange={(event) => {
+            const next = model.products.find((item) => item.id === event.target.value) ?? model.products[0];
+            setDraft({ ...draft, productId: next.id, sizeId: next.sizes.some((size) => size.id === draft.sizeId) ? draft.sizeId : next.sizes[0].id });
+          }}>
+            {model.products.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>
+        </label>
         <label className="field"><span>Print size</span>
           <select aria-label="Print size" value={draft.sizeId} onChange={(event) => setDraft({ ...draft, sizeId: event.target.value })}>
-            {model.sizes.map((size) => <option key={size.id} value={size.id}>{size.label}</option>)}
+            {(model.products.find((item) => item.id === draft.productId)?.sizes ?? model.sizes).map((size) => <option key={size.id} value={size.id}>{size.label}</option>)}
           </select>
         </label>
         <button className="btn-gold" type="submit" disabled={busy}>Save revision</button>

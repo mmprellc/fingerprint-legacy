@@ -3,7 +3,7 @@ import Link from "next/link";
 import { randomBytes } from "node:crypto";
 import { PROOF_LLM_ENV } from "@/lib/proof/interpret";
 import { proofCapacity, recordVersion } from "@/lib/proof/record";
-import { productById } from "@/lib/products";
+import { buyableProducts, productById } from "@/lib/products";
 import { getDesign, saveDesign } from "@/lib/store";
 import { ProofClient } from "./proof-client";
 
@@ -49,6 +49,11 @@ export default async function ProofPage({ params }: { params: Promise<{ id: stri
           capacity: proofCapacity(design, latest?.style ?? design.style),
           llmReady: Boolean((process.env[PROOF_LLM_ENV] || "").trim()),
           sizes: product.sizes.map((size) => ({ id: size.id, label: size.label })),
+          products: buyableProducts.map((item) => ({
+            id: item.id,
+            name: item.name,
+            sizes: item.sizes.map((size) => ({ id: size.id, label: size.label })),
+          })),
         }}
       />
     </article>
