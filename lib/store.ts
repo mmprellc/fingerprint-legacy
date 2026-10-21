@@ -157,6 +157,24 @@ export async function listOrders() {
   return readOrders();
 }
 
+/** Recent proofs for the owner book. Newest first. */
+export async function listDesigns() {
+  if (usingPostgres()) return listDesignsPg();
+  let names: string[] = [];
+  try {
+    names = await fs.readdir(path.join(root, "designs"));
+  } catch {
+    return [];
+  }
+  const designs: Design[] = [];
+  for (const name of names) {
+    const design = await getDesign(name);
+    if (design) designs.push(design);
+  }
+  designs.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  return designs.slice(0, 40);
+}
+
 export async function joinLaunchList(input: Omit<LaunchSignup, "id" | "createdAt" | "email"> & { email: string }) {
   const signup: LaunchSignup = {
     id: newId("lst"),
@@ -389,6 +407,12 @@ async function getDesignPg(id: string) {
   const db = await sql();
   const rows = await db<{ payload: Design | string }[]>`SELECT payload FROM designs WHERE id = ${id} LIMIT 1`;
   return rows[0] ? asJson<Design>(rows[0].payload) : null;
+}
+
+async function listDesignsPg() {
+  const db = await sql();
+  const rows = await db<{ payload: Design | string }[]>`SELECT payload FROM designs ORDER BY created_at DESC LIMIT 40`;
+  return rows.map((row) => asJson<Design>(row.payload));
 }
 
 async function createOrderPg(order: Order) {

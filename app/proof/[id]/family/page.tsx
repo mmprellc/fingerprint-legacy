@@ -24,13 +24,15 @@ export default async function FamilyProofPage({
       </article>
     );
   }
-  const version = design.versions?.find((item) => item.number === design.approvedVersion) ?? design.versions?.at(-1);
+  const approved = design.versions?.find((item) => item.number === design.approvedVersion);
+  const version = approved ?? design.versions?.at(-1);
   const number = version?.number ?? 1;
   return (
     <article className="page">
       <p className="kicker">Family</p>
       <h1>{design.style.headerName || "A portrait"}</h1>
       <p className="lede">You can look at the proof and leave a comment. Ordering stays with the person who made it.</p>
+      {approved ? <p className="note">Approved: Version {approved.number}</p> : <p className="note">This proof is not approved yet.</p>}
       <img src={`/api/designs/${design.id}/asset/v${number}.png`} alt="Shared proof" />
       <ul>
         {(design.comments ?? []).map((comment) => (
