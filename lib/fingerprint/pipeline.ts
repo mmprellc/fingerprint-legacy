@@ -1,5 +1,5 @@
 import { auditLayout, capHeight, legibleScale, type Check } from "./audit";
-import { auditFidelity } from "./fidelity";
+import { auditFidelity, RELAXED_IOU_MIN } from "./fidelity";
 import { extractFromGray } from "./engine";
 import { countCrossings, curvatureReport } from "./geometry";
 import { pitchSep, ridgePitch } from "./lettering";
@@ -56,6 +56,8 @@ const FLIPPED: Profile = { id: "flipped", inkDelta: 30, spacingLimit: 0.72, spac
 
 /** The only attempts, in order. The first is the Randy print. Later ones run only if that one fails. */
 export const PORTRAIT_PROFILES: Profile[] = [LOCKED, TIGHTER, FULLER, FLIPPED];
+
+const RELAXED_SILHOUETTE = "The silhouette is a little looser than the strict match. You can still review this portrait.";
 
 const BLUR_FLOOR = 8;
 const CONTRAST_FLOOR = 28;
@@ -356,6 +358,14 @@ function attemptScore(checks: Check[]) {
   return checks.reduce((sum, check) => sum + (check.passed ? 1 : 0), 0);
 }
 
+/** Strict outline missed, and nothing else did. A chopped or unreadable print still fails. */
+function relaxedShape(checks: Check[]) {
+  const failed = checks.filter((check) => !check.passed);
+  if (failed.length !== 1 || failed[0].id !== "shape") return false;
+  const score = failed[0].score;
+  return typeof score === "number" && score >= RELAXED_IOU_MIN;
+}
+
 /** These describe the photograph and the extracted ridges, not how much text the customer typed. */
 const SILHOUETTE_IDS = new Set(["shape", "flow", "likeness", "inside-mask", "spacing", "max-gap", "crossings", "curvature"]);
 
@@ -446,6 +456,20 @@ export function producePortrait(
   let lastDark: boolean | undefined;
   let best: { score: number; extracted: ExtractResult; checks: Check[]; scale: number } | null = null;
 
+  const accept = (extracted: ExtractResult, scale: number, extraWarning = "") => ({
+    accepted: true as const,
+    width: extracted.width,
+    height: extracted.height,
+    period: extracted.period,
+    ridges: extracted.ridges,
+    ridgesAreDark: extracted.ridgesAreDark,
+    warnings: [...extracted.warnings, ...(edgeNote ? [edgeNote] : []), ...(extraWarning ? [extraWarning] : [])],
+    attempts,
+    retake: null,
+    metrics,
+    textScale: scale,
+  });
+
   for (const profile of PORTRAIT_PROFILES) {
     const ridges = profile.flip
       ? lastDark === undefined
@@ -483,21 +507,9 @@ export function producePortrait(
     if (!best || score > best.score) best = { score, extracted, checks, scale };
     // Another extract will not add words. A density or name shortfall on a
     // readable silhouette is the portrait, not a photo retake.
-    if (passed || textShortfallOnly(checks)) {
-      return {
-        accepted: true,
-        width: extracted.width,
-        height: extracted.height,
-        period: extracted.period,
-        ridges: extracted.ridges,
-        ridgesAreDark: extracted.ridgesAreDark,
-        warnings: edgeNote ? [...extracted.warnings, edgeNote] : extracted.warnings,
-        attempts,
-        retake: null,
-        metrics,
-        textScale: scale,
-      };
-    }
+    if (passed || textShortfallOnly(checks)) return accept(extracted, scale);
+    // A close outline miss is still this print. A chopped photo keeps failing.
+    if (relaxedShape(checks)) return accept(extracted, scale, RELAXED_SILHOUETTE);
   }
 
   const failed = best?.checks ?? [];

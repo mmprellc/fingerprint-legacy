@@ -13,6 +13,8 @@ import type { ExtractResult, PrintStyle, Pt } from "./types";
 const COVER_REACH = 1.05;
 const COVER_MIN = 0.95;
 const IOU_MIN = 0.9;
+/** A real print can sit just under the strict outline and still be reviewable. */
+export const RELAXED_IOU_MIN = 0.82;
 const FLOW_MIN = 0.72;
 const LIKENESS_MIN = 0.4;
 
@@ -350,6 +352,7 @@ export function auditFidelity(result: ExtractResult, style: PrintStyle): Check[]
       id: "shape",
       label: "Silhouette shape",
       passed: score.iou >= IOU_MIN,
+      score: score.iou,
       detail: `IoU with the ink mask is ${pct(score.iou)}.`,
     },
     {

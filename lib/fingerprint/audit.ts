@@ -8,6 +8,8 @@ export type Check = {
   label: string;
   passed: boolean;
   detail: string;
+  /** Raw measurement for checks that have a relaxed fallback. */
+  score?: number;
 };
 
 /**
