@@ -1,12 +1,15 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FrameMockup } from "@/components/FrameMockup";
 import { isFrameSize } from "@/lib/frames";
 import type { PrintStyle } from "@/lib/fingerprint/types";
+import { describeVersionChange } from "@/lib/proof/diff";
 import type { ProofComment, ProofVersion } from "@/lib/store";
 
 type NameRow = { text: string; freq: "once" | "normal" | "hold" };
+
+type PrintSizeChoice = { id: string; label: string; productId: string };
 
 export type ProofModel = {
   id: string;
@@ -21,6 +24,7 @@ export type ProofModel = {
   capacity: string;
   llmReady: boolean;
   sizes: { id: string; label: string }[];
+  printSizes: PrintSizeChoice[];
   products: { id: string; name: string; sizes: { id: string; label: string }[] }[];
 };
 
@@ -109,58 +113,142 @@ async function readJson<T>(response: Response): Promise<T> {
 export function ProofClient({ model }: { model: ProofModel }) {
   const [versions, setVersions] = useState(model.versions);
   const [approved, setApproved] = useState(model.approvedVersion);
-  const [comments, setComments] = useState(model.comments);
+  const [comments] = useState(model.comments);
   const [current, setCurrent] = useState(model.versions.at(-1)?.number ?? 1);
-  const [compare, setCompare] = useState(model.versions.at(-1)?.number ?? 1);
+  const [compare, setCompare] = useState(() => {
+    const latest = model.versions.at(-1)?.number ?? 1;
+    return model.versions.find((version) => version.number !== latest)?.number ?? latest;
+  });
   const [zoom, setZoom] = useState(1);
   const [closeup, setCloseup] = useState<"print" | "core" | "ridge">("print");
   const [draft, setDraft] = useState<Draft>(() => draftFrom(model.style, model.sizeId, model.productId));
-  const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [approving, setApproving] = useState(false);
   const [message, setMessage] = useState("");
   const [request, setRequest] = useState("");
   const [capacity, setCapacity] = useState(model.capacity);
+  const approveQueued = useRef(false);
+  const versionsRef = useRef(versions);
+  versionsRef.current = versions;
   const shown = versions.find((version) => version.number === current) ?? versions.at(-1);
-  const other = versions.find((version) => version.number === compare) ?? shown;
+  const other = versions.find((version) => version.number === compare);
   const warnings = shown?.warnings ?? [];
   const sound = warnings.length === 1 && warnings[0].startsWith("No cut-off");
+  const changes = shown && other && other.number !== shown.number
+    ? describeVersionChange(
+        { style: other.style, sizeId: other.sizeId },
+        { style: shown.style, sizeId: shown.sizeId },
+      )
+    : [];
 
   const share = useMemo(() => {
     if (typeof window === "undefined") return model.sharePath;
     return `${window.location.origin}${model.sharePath}`;
   }, [model.sharePath]);
 
-  function applyVersion(version: ProofVersion) {
+  useEffect(() => {
+    if (!shown) return;
+    if (compare !== shown.number) return;
+    const fallback = [...versions].reverse().find((version) => version.number !== shown.number);
+    if (fallback) setCompare(fallback.number);
+  }, [compare, shown, versions]);
+
+  function applyVersion(version: ProofVersion, nextCapacity?: string) {
     setCurrent(version.number);
     setDraft(draftFrom(version.style, version.sizeId, version.productId));
-    setCapacity(model.capacity);
+    if (nextCapacity) setCapacity(nextCapacity);
   }
 
-  async function save(note?: string) {
-    setBusy(true);
+  function adopt(version: ProofVersion, nextCapacity?: string, previous?: number) {
+    setVersions((items) => {
+      const next = items.some((item) => item.number === version.number) ? items : [...items, version];
+      versionsRef.current = next;
+      return next;
+    });
+    applyVersion(version, nextCapacity);
+    if (previous && previous !== version.number) setCompare(previous);
+  }
+
+  async function markApproved(number: number | undefined) {
+    if (!number || approving) return;
+    setApproving(true);
+    setMessage("");
+    try {
+      const response = await fetch(`/api/designs/${model.id}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ number }),
+      });
+      const payload = await readJson<{ error?: string; approvedVersion?: number }>(response);
+      if (!response.ok || !payload.approvedVersion) throw new Error(payload.error || "The proof could not be approved.");
+      setApproved(payload.approvedVersion);
+      setCurrent(payload.approvedVersion);
+      const version = versionsRef.current.find((item) => item.number === payload.approvedVersion);
+      if (version) setDraft(draftFrom(version.style, version.sizeId, version.productId));
+      setMessage(`Approved: Version ${payload.approvedVersion}`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The proof could not be approved.");
+    } finally {
+      setApproving(false);
+    }
+  }
+
+  async function save() {
+    if (saving) return;
+    const previous = current;
+    setSaving(true);
     setMessage("");
     try {
       const style = styleFrom(model.style, draft);
       const response = await fetch(`/api/designs/${model.id}/revise`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ style, sizeId: draft.sizeId, productId: draft.productId, note }),
+        body: JSON.stringify({ style, sizeId: draft.sizeId, productId: draft.productId }),
       });
       const payload = await readJson<{ error?: string; version?: ProofVersion; capacity?: string }>(response);
       if (!response.ok || !payload.version) throw new Error(payload.error || "The revision could not be saved.");
-      setVersions((items) => [...items, payload.version!]);
-      setCurrent(payload.version.number);
-      setCompare(payload.version.number);
-      if (payload.capacity) setCapacity(payload.capacity);
+      adopt(payload.version, payload.capacity, previous);
       setMessage(payload.version.changes.join(" "));
+      if (approveQueued.current) {
+        approveQueued.current = false;
+        await markApproved(payload.version.number);
+      }
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "The revision could not be saved.");
     } finally {
-      setBusy(false);
+      setSaving(false);
+    }
+  }
+
+  async function revert() {
+    if (!shown || saving) return;
+    const previous = current;
+    const source = shown.number;
+    setSaving(true);
+    setMessage("");
+    try {
+      const response = await fetch(`/api/designs/${model.id}/revise`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ revertTo: source }),
+      });
+      const payload = await readJson<{ error?: string; version?: ProofVersion; capacity?: string }>(response);
+      if (!response.ok || !payload.version) throw new Error(payload.error || "The version could not be restored.");
+      adopt(payload.version, payload.capacity, previous);
+      setMessage(payload.version.note);
+      if (approveQueued.current) {
+        approveQueued.current = false;
+        await markApproved(payload.version.number);
+      }
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "The version could not be restored.");
+    } finally {
+      setSaving(false);
     }
   }
 
   async function interpret() {
-    setBusy(true);
+    setSaving(true);
     setMessage("");
     try {
       const response = await fetch(`/api/designs/${model.id}/interpret`, {
@@ -174,39 +262,31 @@ export function ProofClient({ model }: { model: ProofModel }) {
         setMessage(payload.reason || `Free-text changes need ${payload.env || "OPENAI_API_KEY"}. The controls below still save a revision.`);
         return;
       }
-      setVersions((items) => [...items, payload.version!]);
-      applyVersion(payload.version);
+      adopt(payload.version, undefined, current);
       setMessage(payload.version.changes.join(" "));
       setRequest("");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "The request could not be read.");
     } finally {
-      setBusy(false);
+      setSaving(false);
     }
   }
 
-  async function approve() {
-    if (!shown) return;
-    setBusy(true);
-    setMessage("");
-    try {
-      const response = await fetch(`/api/designs/${model.id}/approve`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ number: shown.number }),
-      });
-      const payload = await readJson<{ error?: string; approvedVersion?: number }>(response);
-      if (!response.ok) throw new Error(payload.error || "The proof could not be approved.");
-      setApproved(payload.approvedVersion);
-      setMessage(`Version ${payload.approvedVersion} is approved. Checkout uses this 300 DPI file.`);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "The proof could not be approved.");
-    } finally {
-      setBusy(false);
+  function approve(event: { preventDefault: () => void; stopPropagation: () => void }) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (saving) {
+      approveQueued.current = true;
+      setMessage("This version will be approved as soon as the save finishes.");
+      return;
     }
+    void markApproved(shown?.number);
   }
 
   const picture = closeup === "print" ? `v${shown?.number ?? 1}.png` : closeup === "core" ? `core${shown?.number ?? 1}.png` : `ridge${shown?.number ?? 1}.png`;
+  const sizeChoices = model.printSizes.some((size) => size.id === draft.sizeId)
+    ? model.printSizes
+    : [...model.printSizes, { id: draft.sizeId, label: draft.sizeId, productId: draft.productId }];
 
   return (
     <div className="proof">
@@ -232,8 +312,11 @@ export function ProofClient({ model }: { model: ProofModel }) {
         </ul>
         {message ? <p className="note" role="status">{message}</p> : null}
         <div className="proof-actions">
-          <button className="btn-gold" type="button" disabled={busy} onClick={approve}>{approved === shown?.number ? "Approved" : "Approve proof"}</button>
+          <button className="btn-gold" type="button" disabled={approving} onClick={approve}>
+            {approved === shown?.number && shown ? `Approved: Version ${shown.number}` : "Approve proof"}
+          </button>
           {approved ? <a className="btn-gold" href={`/checkout?design=${model.id}`}>Continue to checkout</a> : <p className="note">Approve a version before checkout.</p>}
+          {approved ? <p className="note">Approved: Version {approved}</p> : null}
         </div>
       </div>
       <form className="proof-controls" onSubmit={(event) => { event.preventDefault(); void save(); }}>
@@ -252,32 +335,32 @@ export function ProofClient({ model }: { model: ProofModel }) {
           <legend>Names</legend>
           {draft.names.map((row, index) => (
             <div className="name-row" key={index}>
-              <input aria-label={`Name ${index + 1}`} value={row.text} onChange={(event) => setDraft({ ...draft, names: draft.names.map((item, at) => at === index ? { ...item, text: event.target.value } : item) })} />
-              <select aria-label={`How often ${row.text || "this name"} repeats`} value={row.freq} onChange={(event) => setDraft({ ...draft, names: draft.names.map((item, at) => at === index ? { ...item, freq: event.target.value as NameRow["freq"] } : item) })}>
+              <input aria-label={`Name ${index + 1}`} value={row.text} onChange={(event) => setDraft((currentDraft) => ({ ...currentDraft, names: currentDraft.names.map((item, at) => at === index ? { ...item, text: event.target.value } : item) }))} />
+              <select aria-label={`How often ${row.text || "this name"} repeats`} value={row.freq} onChange={(event) => setDraft((currentDraft) => ({ ...currentDraft, names: currentDraft.names.map((item, at) => at === index ? { ...item, freq: event.target.value as NameRow["freq"] } : item) }))}>
                 <option value="normal">Normal</option>
                 <option value="once">Once</option>
                 <option value="hold">Exclude from repeats</option>
               </select>
-              <button type="button" onClick={() => index > 0 && setDraft({ ...draft, names: swap(draft.names, index, index - 1) })}>Up</button>
-              <button type="button" onClick={() => index < draft.names.length - 1 && setDraft({ ...draft, names: swap(draft.names, index, index + 1) })}>Down</button>
-              <button type="button" onClick={() => setDraft({ ...draft, names: draft.names.filter((_, at) => at !== index) })}>Remove</button>
+              <button type="button" onClick={() => index > 0 && setDraft((currentDraft) => ({ ...currentDraft, names: swap(currentDraft.names, index, index - 1) }))}>Up</button>
+              <button type="button" onClick={() => index < draft.names.length - 1 && setDraft((currentDraft) => ({ ...currentDraft, names: swap(currentDraft.names, index, index + 1) }))}>Down</button>
+              <button type="button" onClick={() => setDraft((currentDraft) => ({ ...currentDraft, names: currentDraft.names.filter((_, at) => at !== index) }))}>Remove</button>
             </div>
           ))}
-          <button type="button" onClick={() => setDraft({ ...draft, names: [...draft.names, { text: "", freq: "normal" }] })}>Add a name</button>
+          <button type="button" onClick={() => setDraft((currentDraft) => ({ ...currentDraft, names: [...currentDraft.names, { text: "", freq: "normal" }] }))}>Add a name</button>
         </fieldset>
         <fieldset>
           <legend>Verses</legend>
           {draft.verses.map((verse, index) => (
-            <textarea key={index} aria-label={`Verse ${index + 1}`} value={verse} onChange={(event) => setDraft({ ...draft, verses: draft.verses.map((item, at) => at === index ? event.target.value : item) })} />
+            <textarea key={index} aria-label={`Verse ${index + 1}`} value={verse} onChange={(event) => setDraft((currentDraft) => ({ ...currentDraft, verses: currentDraft.verses.map((item, at) => at === index ? event.target.value : item) }))} />
           ))}
-          <button type="button" onClick={() => setDraft({ ...draft, verses: [...draft.verses, ""] })}>Add a verse</button>
+          <button type="button" onClick={() => setDraft((currentDraft) => ({ ...currentDraft, verses: [...currentDraft.verses, ""] }))}>Add a verse</button>
         </fieldset>
         <fieldset>
           <legend>Stories</legend>
           {draft.stories.map((story, index) => (
-            <textarea key={index} aria-label={`Story ${index + 1}`} value={story} onChange={(event) => setDraft({ ...draft, stories: draft.stories.map((item, at) => at === index ? event.target.value : item) })} />
+            <textarea key={index} aria-label={`Story ${index + 1}`} value={story} onChange={(event) => setDraft((currentDraft) => ({ ...currentDraft, stories: currentDraft.stories.map((item, at) => at === index ? event.target.value : item) }))} />
           ))}
-          <button type="button" onClick={() => setDraft({ ...draft, stories: [...draft.stories, ""] })}>Add a story</button>
+          <button type="button" onClick={() => setDraft((currentDraft) => ({ ...currentDraft, stories: [...currentDraft.stories, ""] }))}>Add a story</button>
         </fieldset>
         <label className="field"><span>When the words run out</span>
           <select aria-label="Filler" value={draft.filler} onChange={(event) => setDraft({ ...draft, filler: event.target.value as Draft["filler"] })}>
@@ -301,21 +384,25 @@ export function ProofClient({ model }: { model: ProofModel }) {
         <label className="field"><span>Format</span>
           <select aria-label="Format" value={draft.productId} onChange={(event) => {
             const next = model.products.find((item) => item.id === event.target.value) ?? model.products[0];
-            setDraft({ ...draft, productId: next.id, sizeId: next.sizes.some((size) => size.id === draft.sizeId) ? draft.sizeId : next.sizes[0].id });
+            const sizeId = next.sizes.some((size) => size.id === draft.sizeId) ? draft.sizeId : next.sizes[0].id;
+            setDraft({ ...draft, productId: next.id, sizeId });
           }}>
             {model.products.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
           </select>
         </label>
         <label className="field"><span>Print size</span>
-          <select aria-label="Print size" value={draft.sizeId} onChange={(event) => setDraft({ ...draft, sizeId: event.target.value })}>
-            {(model.products.find((item) => item.id === draft.productId)?.sizes ?? model.sizes).map((size) => <option key={size.id} value={size.id}>{size.label}</option>)}
+          <select aria-label="Print size" value={draft.sizeId} onChange={(event) => {
+            const picked = sizeChoices.find((size) => size.id === event.target.value);
+            setDraft({ ...draft, sizeId: event.target.value, productId: picked?.productId || draft.productId });
+          }}>
+            {sizeChoices.map((size) => <option key={size.id} value={size.id}>{size.label}</option>)}
           </select>
         </label>
-        <button className="btn-gold" type="submit" disabled={busy}>Save revision</button>
+        <button className="btn-gold" type="submit" disabled={saving}>Save revision</button>
         <label className="field"><span>Or describe a change</span>
           <textarea aria-label="Change request" value={request} onChange={(event) => setRequest(event.target.value)} placeholder="Make the center bolder, or keep Hanadi only once." />
         </label>
-        <button className="btn-ghost" type="button" disabled={busy || request.trim().length < 3} onClick={() => void interpret()}>Apply written request</button>
+        <button className="btn-ghost" type="button" disabled={saving || request.trim().length < 3} onClick={() => void interpret()}>Apply written request</button>
         {model.llmReady ? null : <p className="note">Free-text changes need OPENAI_API_KEY. The controls above still save a revision.</p>}
       </form>
       <section className="proof-history">
@@ -324,22 +411,37 @@ export function ProofClient({ model }: { model: ProofModel }) {
           {versions.map((version) => (
             <button type="button" key={version.number} className={version.number === current ? "version on" : "version"} onClick={() => applyVersion(version)}>
               <img src={`/api/designs/${model.id}/asset/v${version.number}.png`} alt="" />
-              <span>Version {version.number}{approved === version.number ? " · approved" : ""}</span>
+              <span>Version {version.number}{approved === version.number ? ", approved" : ""}</span>
             </button>
           ))}
         </div>
         <label className="field"><span>Compare with</span>
-          <select aria-label="Compare version" value={compare} onChange={(event) => setCompare(Number(event.target.value))}>
-            {versions.map((version) => <option key={version.number} value={version.number}>Version {version.number}</option>)}
+          <select aria-label="Compare version" value={other && other.number !== shown?.number ? compare : ""} onChange={(event) => setCompare(Number(event.target.value))}>
+            {versions.filter((version) => version.number !== shown?.number).map((version) => (
+              <option key={version.number} value={version.number}>Version {version.number}</option>
+            ))}
           </select>
         </label>
-        {other && other.number !== shown?.number ? (
-          <div className="compare">
-            <figure><img src={`/api/designs/${model.id}/asset/v${shown?.number}.png`} alt={`Version ${shown?.number}`} /><figcaption>Version {shown?.number}</figcaption></figure>
-            <figure><img src={`/api/designs/${model.id}/asset/v${other.number}.png`} alt={`Version ${other.number}`} /><figcaption>Version {other.number}</figcaption></figure>
-          </div>
-        ) : null}
-        {shown ? <button className="btn-ghost" type="button" disabled={busy} onClick={() => void save(`Restored version ${shown.number}`)}>Revert to this version</button> : null}
+        {shown && other && other.number !== shown.number ? (
+          <>
+            <div className="compare">
+              <figure>
+                <img src={`/api/designs/${model.id}/asset/v${shown.number}.png`} alt={`Version ${shown.number}`} />
+                <figcaption>Version {shown.number}</figcaption>
+              </figure>
+              <figure>
+                <img src={`/api/designs/${model.id}/asset/v${other.number}.png`} alt={`Version ${other.number}`} />
+                <figcaption>Version {other.number}</figcaption>
+              </figure>
+            </div>
+            <ul className="compare-notes">
+              {changes.map((line) => <li key={line}>{line}</li>)}
+            </ul>
+          </>
+        ) : (
+          <p className="note">Choose another version to see them side by side.</p>
+        )}
+        {shown ? <button className="btn-ghost" type="button" disabled={saving} onClick={() => void revert()}>Revert to this version</button> : null}
         <p className="note">Family link: <a href={share}>{share}</a></p>
         <ul>{comments.map((comment) => <li key={comment.id}><strong>{comment.author}</strong> {comment.text}</li>)}</ul>
       </section>

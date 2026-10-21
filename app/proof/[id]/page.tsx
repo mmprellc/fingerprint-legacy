@@ -3,6 +3,7 @@ import Link from "next/link";
 import { randomBytes } from "node:crypto";
 import { PROOF_LLM_ENV } from "@/lib/proof/interpret";
 import { proofCapacity, recordVersion } from "@/lib/proof/record";
+import { frameSizes } from "@/lib/frames";
 import { buyableProducts, productById } from "@/lib/products";
 import { getDesign, saveDesign } from "@/lib/store";
 import { ProofClient } from "./proof-client";
@@ -28,8 +29,12 @@ export default async function ProofPage({ params }: { params: Promise<{ id: stri
   if (!design.versions?.length) {
     design = await recordVersion(design, { style: design.style, note: "Uploaded from the studio", changes: ["First proof."] });
   }
-  const product = productById(design.productId);
   const latest = design.versions?.at(-1);
+  const product = productById(latest?.productId ?? design.productId);
+  const printSizes = [
+    { id: "natural", label: "Natural proportion", productId: "digital" },
+    ...frameSizes.map((size) => ({ id: size.id, label: size.label.replace("×", "x"), productId: "framed" })),
+  ];
   return (
     <article className="page proof-page">
       <p className="kicker">Proof</p>
@@ -40,15 +45,16 @@ export default async function ProofPage({ params }: { params: Promise<{ id: stri
           id: design.id,
           style: latest?.style ?? design.style,
           sizeId: latest?.sizeId ?? design.sizeId,
-          productId: design.productId,
+          productId: latest?.productId ?? design.productId,
           frameId: design.frameId,
           versions: design.versions ?? [],
           approvedVersion: design.approvedVersion,
           comments: design.comments ?? [],
           sharePath: `/proof/${design.id}/family?token=${design.shareToken}`,
-          capacity: proofCapacity(design, latest?.style ?? design.style),
+          capacity: proofCapacity(design, latest?.style ?? design.style, latest?.sizeId ?? design.sizeId, latest?.productId ?? design.productId),
           llmReady: Boolean((process.env[PROOF_LLM_ENV] || "").trim()),
           sizes: product.sizes.map((size) => ({ id: size.id, label: size.label })),
+          printSizes,
           products: buyableProducts.map((item) => ({
             id: item.id,
             name: item.name,

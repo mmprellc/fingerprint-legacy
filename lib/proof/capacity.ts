@@ -43,8 +43,9 @@ export function ridgeCapacity(ridges: Ridge[], period: number, textScale: number
   return Math.max(1, Math.round((length * 0.95) / pitch));
 }
 
-export function capacityLine(used: number, capacity: number) {
+export function capacityLine(used: number, capacity: number, sizeLabel?: string) {
+  const place = sizeLabel ? ` at ${sizeLabel}` : "";
   const more = capacity - used;
-  if (more > 0) return `Uses ${used} of ~${capacity.toLocaleString("en-US")} words. Add ~${more.toLocaleString("en-US")} more to avoid repeats.`;
-  return `Uses ${used} of ~${capacity.toLocaleString("en-US")} words. The ridges repeat content to fill the print.`;
+  if (more > 0) return `Uses ${used} of ~${capacity.toLocaleString("en-US")} words${place}. Add ~${more.toLocaleString("en-US")} more to avoid repeats.`;
+  return `Uses ${used} of ~${capacity.toLocaleString("en-US")} words${place}. The ridges repeat content to fill the print.`;
 }

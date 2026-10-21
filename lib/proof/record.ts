@@ -25,9 +25,17 @@ async function crop(png: Buffer, leftRatio: number, topRatio: number, widthRatio
   return sharp(png).extract({ left, top, width: cropWidth, height: cropHeight }).resize({ width: 720 }).png().toBuffer();
 }
 
-export function proofCapacity(design: Pick<Design, "prints" | "period">, style: PrintStyle) {
+export function proofCapacity(
+  design: Pick<Design, "prints" | "period" | "productId" | "sizeId">,
+  style: PrintStyle,
+  sizeId?: string,
+  productId?: string,
+) {
+  const product = productById(productId || design.productId);
+  const size = product.sizes.find((item) => item.id === (sizeId || design.sizeId)) ?? product.sizes[0];
   const ridges = design.prints[0]?.ridges ?? [];
-  return capacityLine(contentWords(style), ridgeCapacity(ridges, design.period, style.textScale || 1));
+  const sizeLabel = size?.inches ? size.label.replaceAll("×", "x") : undefined;
+  return capacityLine(contentWords(style), ridgeCapacity(ridges, design.period, style.textScale || 1), sizeLabel);
 }
 
 /** Saves the next numbered proof, its thumbnail, and the two close-ups. */
