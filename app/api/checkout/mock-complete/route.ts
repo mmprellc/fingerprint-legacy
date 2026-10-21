@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
 import { fulfillOrder, paymentsMode } from "@/lib/fulfill";
+import { publicOrigin } from "@/lib/runtime";
 import { getOrder, updateOrder } from "@/lib/store";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
 export async function POST(request: Request) {
-  const origin = new URL(request.url).origin;
+  const origin = publicOrigin(request);
   const form = await request.formData();
   const orderId = String(form.get("orderId") || "");
   const order = await getOrder(orderId);

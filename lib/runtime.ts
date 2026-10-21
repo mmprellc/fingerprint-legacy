@@ -68,11 +68,18 @@ export class HostingConfigError extends Error {
   }
 }
 
-/** Canonical public origin when set, otherwise the host that received this request. */
+function safeHost(value: string) {
+  return /^[a-z0-9.-]+(?::\d+)?$/i.test(value) || /^\[[0-9a-f:]+\](?::\d+)?$/i.test(value);
+}
+
+/** Canonical public origin when set, otherwise the host the browser actually used. */
 export function publicOrigin(request: Request) {
   const configured = (process.env.PUBLIC_BASE_URL || "").trim().replace(/\/$/, "");
   if (configured) return configured;
-  return new URL(request.url).origin;
+  const url = new URL(request.url);
+  const host = request.headers.get("host")?.trim() || "";
+  if (safeHost(host)) url.host = host;
+  return url.origin;
 }
 
 export function webhookPath() {
