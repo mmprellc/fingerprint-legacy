@@ -26,15 +26,19 @@ export async function POST(request: Request) {
   if (!design) {
     return NextResponse.redirect(new URL("/studio", requestOrigin), 303);
   }
+  if (design.versions?.length && !design.approvedVersion) {
+    return NextResponse.redirect(new URL(`/proof/${design.id}`, requestOrigin), 303);
+  }
+  const approved = design.versions?.find((version) => version.number === design.approvedVersion);
   const email = String(form.get("email") || "").trim();
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
     return NextResponse.redirect(new URL(`/checkout?design=${designId}&error=email`, requestOrigin), 303);
   }
-  const product = productById(String(form.get("productId") || design.productId));
+  const product = productById(String(form.get("productId") || approved?.productId || design.productId));
   if (!product.available) {
     return NextResponse.redirect(new URL(`/checkout?design=${designId}&error=product`, requestOrigin), 303);
   }
-  const size = product.sizes.find((item) => item.id === String(form.get("sizeId") || "")) ?? product.sizes[0];
+  const size = product.sizes.find((item) => item.id === String(form.get("sizeId") || approved?.sizeId || "")) ?? product.sizes[0];
   const shipping = readShipping(form);
   if (product.fulfillment === "printful" && mode === "mock" && !shipping.address1) {
     return NextResponse.redirect(new URL(`/checkout?design=${designId}&error=address`, requestOrigin), 303);
@@ -48,6 +52,7 @@ export async function POST(request: Request) {
     amountCents: product.priceCents,
     checkout: mode,
     designId,
+    ...(design.approvedVersion ? { approvedVersion: design.approvedVersion } : {}),
     ...(product.id === "framed" && isFrameFinish(frameId) ? { frameId } : {}),
     shipping: product.fulfillment === "printful" ? shipping : undefined,
   });

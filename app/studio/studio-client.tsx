@@ -423,7 +423,7 @@ export function StudioClient({
       });
       const payload = await readJson<{ error?: string; id?: string }>(response);
       if (!response.ok) throw new Error(payload.error || "The design could not be saved.");
-      window.location.href = `/checkout?design=${payload.id}`;
+      window.location.href = `/proof/${payload.id}`;
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "The design could not be saved.");
       setBusy(false);
@@ -763,7 +763,7 @@ export function StudioClient({
         {waitlist ? <p className="note">Orders open soon. Joining the list saves your email. Nothing is charged, and nothing is sent to print.</p> : null}
         <div className="checkout-bar">
           <strong>{formatMoney(product.priceCents)}</strong>
-          <button className="btn-gold" type="button" disabled={!ready || busy} onClick={checkout}>{waitlist ? "Join the list" : "Continue to checkout"}</button>
+          <button className="btn-gold" type="button" disabled={!ready || busy} onClick={checkout}>Review the proof</button>
         </div>
       </aside>
       <style>{`

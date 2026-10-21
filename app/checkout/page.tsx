@@ -36,7 +36,18 @@ export default async function CheckoutPage({ searchParams }: { searchParams: Pro
       </article>
     );
   }
-  const product = productById(design.productId);
+  if (design.versions?.length && !design.approvedVersion) {
+    return (
+      <article className="page">
+        <p className="kicker">Checkout</p>
+        <h1>Approve the proof first.</h1>
+        <p className="lede">Checkout uses the version you approve. Nothing is sent to print before that.</p>
+        <Link className="btn-gold" href={`/proof/${design.id}`}>Return to the proof</Link>
+      </article>
+    );
+  }
+  const approved = design.versions?.find((version) => version.number === design.approvedVersion);
+  const product = productById(approved?.productId || design.productId);
   const mode = paymentsMode();
   const joined = params.joined === "1" && mode === "waitlist";
   if (joined) {
@@ -58,7 +69,7 @@ export default async function CheckoutPage({ searchParams }: { searchParams: Pro
       <CheckoutForm
           designId={design.id}
           productId={product.available ? product.id : "digital"}
-          sizeId={design.sizeId}
+          sizeId={approved?.sizeId || design.sizeId}
           frameId={design.frameId || "black"}
           imageUrl={`/api/designs/${design.id}/preview`}
           products={buyableProducts.map((item) => ({
@@ -78,6 +89,7 @@ function messageFor(error: string) {
   if (error === "email") return "Enter an email address so the portrait has a place to go.";
   if (error === "address") return "A printed piece needs a shipping address.";
   if (error === "stripe") return "Stripe did not return a payment page. Try again.";
+  if (error === "approve") return "Approve the proof before checkout.";
   if (error === "payments") return "Payments are not ready on this site yet.";
   if (error === "storage") return "The list could not be saved. The host is missing its database.";
   return "Something about the order needs another look.";

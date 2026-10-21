@@ -4,7 +4,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { formatMoney, productById } from "@/lib/products";
 import { HostingConfigError } from "@/lib/runtime";
-import { DASHBOARD_COOKIE, listLaunchSignups, listOrders, verifyDashboard, type LaunchSignup, type Order } from "@/lib/store";
+import { DASHBOARD_COOKIE, getDesign, listLaunchSignups, listOrders, verifyDashboard, type LaunchSignup, type Order } from "@/lib/store";
 
 export const metadata: Metadata = { title: "Orders" };
 export const dynamic = "force-dynamic";
@@ -28,6 +28,12 @@ export default async function DashboardPage() {
     }
     throw error;
   }
+  const proofs = new Map<string, { versions: number; approved?: number }>();
+  await Promise.all(orders.map(async (order) => {
+    const design = await getDesign(order.designId).catch(() => null);
+    if (!design) return;
+    proofs.set(order.id, { versions: design.versions?.length ?? 0, approved: order.approvedVersion ?? design.approvedVersion });
+  }));
   return (
     <article className="page">
       <p className="kicker">Owner</p>
@@ -71,6 +77,7 @@ export default async function DashboardPage() {
                 <th>Status</th>
                 <th>Print desk</th>
                 <th>Files</th>
+                <th>Proof</th>
               </tr>
             </thead>
             <tbody>
@@ -87,6 +94,12 @@ export default async function DashboardPage() {
                     <td><span className="pill">{order.status}</span>{order.error ? <div className="note">{order.error}</div> : null}</td>
                     <td>{order.printful ? `${order.printful.mode} · ${order.printful.status ?? ""} ${order.printful.id ?? ""}` : "—"}</td>
                     <td>{order.files ? <a href={`/api/orders/${order.id}/files/zip`}>Download</a> : "—"}</td>
+                    <td>
+                      {proofs.get(order.id)?.versions ? `${proofs.get(order.id)?.versions} versions` : "—"}
+                      {proofs.get(order.id)?.approved ? (
+                        <div className="note"><a href={`/api/designs/${order.designId}/asset/approved.png`}>Approved file</a> · version {proofs.get(order.id)?.approved}</div>
+                      ) : null}
+                    </td>
                   </tr>
                 );
               })}
