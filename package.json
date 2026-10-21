@@ -12,6 +12,7 @@
     "render-randy": "tsx scripts/render-randy.ts",
     "regression": "tsx scripts/regression-portraits.ts",
     "upload-portrait": "tsx scripts/upload-portrait.ts",
+    "test:studio-upload": "tsx scripts/studio-upload-production.ts",
     "production-check": "tsx scripts/production-check.ts",
     "store-smoke": "tsx scripts/store-smoke.ts"
   },

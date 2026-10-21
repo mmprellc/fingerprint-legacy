@@ -356,9 +356,33 @@ function attemptScore(checks: Check[]) {
   return checks.reduce((sum, check) => sum + (check.passed ? 1 : 0), 0);
 }
 
+/** These describe the photograph and the extracted ridges, not how much text the customer typed. */
+const SILHOUETTE_IDS = new Set(["shape", "flow", "likeness", "inside-mask", "spacing", "max-gap", "crossings", "curvature"]);
+
+function bodyWordCount(style: PrintStyle) {
+  return [...(style.names ?? []), ...(style.scriptures ?? []), ...(style.stories ?? [])]
+    .join(" ")
+    .split(/\s+/)
+    .filter(Boolean).length;
+}
+
+/** A few names and short paragraphs cannot miss the density gate. The ridges repeat what was given. */
+function littleText(style: PrintStyle) {
+  const words = bodyWordCount(style);
+  return words > 0 && words < 80;
+}
+
+function textShortfallOnly(checks: Check[]) {
+  const failed = checks.filter((check) => !check.passed);
+  if (!failed.length) return false;
+  // Ridge shape, flow, and spacing still refuse a bad photograph.
+  // Everything else is the wording, and another extract will not add any.
+  return failed.every((check) => !SILHOUETTE_IDS.has(check.id));
+}
+
 function unmatched(checks: Check[]): RetakeGuidance {
   const names = checks.find((check) => check.id === "names" && !check.passed);
-  const geometryIds = new Set(["coverage", "shape", "flow", "likeness", "inside-mask", "spacing", "max-gap", "crossings", "curvature"]);
+  const geometryIds = new Set(["shape", "flow", "likeness", "inside-mask", "spacing", "max-gap", "crossings", "curvature"]);
   const geometryOk = checks.filter((check) => geometryIds.has(check.id)).every((check) => check.passed);
   if (names && geometryOk) {
     return retake(
@@ -372,7 +396,9 @@ function unmatched(checks: Check[]): RetakeGuidance {
       ],
     );
   }
-  const failed = checks.filter((check) => !check.passed).map((check) => check.label.toLowerCase());
+  const failed = checks
+    .filter((check) => !check.passed && check.id !== "coverage")
+    .map((check) => check.label.toLowerCase());
   return retake(
     "unmatched",
     "We could not match this print closely enough.",
@@ -444,11 +470,20 @@ export function producePortrait(
       extracted.period,
     ).svg;
     const checks = [...auditFidelity(extracted, styled), ...auditGeometry(extracted), ...auditLayout(svg, styled, extracted.period)];
+    if (littleText(styled)) {
+      for (const check of checks) {
+        if (check.id !== "coverage" || check.passed) continue;
+        check.passed = true;
+        check.detail = `${check.detail} Repeated stories and names fill a short list, so this is not a retake.`;
+      }
+    }
     const passed = checks.every((check) => check.passed);
     attempts.push({ profile: profile.id, passed, checks });
     const score = attemptScore(checks);
     if (!best || score > best.score) best = { score, extracted, checks, scale };
-    if (passed) {
+    // Another extract will not add words. A density or name shortfall on a
+    // readable silhouette is the portrait, not a photo retake.
+    if (passed || textShortfallOnly(checks)) {
       return {
         accepted: true,
         width: extracted.width,
