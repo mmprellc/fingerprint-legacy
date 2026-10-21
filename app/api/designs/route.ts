@@ -1,5 +1,7 @@
+import { randomBytes } from "node:crypto";
 import { NextResponse } from "next/server";
 import { renderArtwork } from "@/lib/fingerprint/render-print";
+import { recordVersion } from "@/lib/proof/record";
 import type { PreviewPrint } from "@/lib/fingerprint/preview";
 import { readPrintStyle } from "@/lib/fingerprint/read-style";
 import type { PrintStyle, Ridge } from "@/lib/fingerprint/types";
@@ -39,10 +41,12 @@ export async function POST(request: Request) {
     period,
     productId: product.id,
     sizeId: size.id,
+    shareToken: randomBytes(9).toString("hex"),
     ...(product.id === "framed" && isFrameFinish(body?.frameId) ? { frameId: body.frameId } : {}),
   };
   try {
     await saveDesign(design);
+    await recordVersion(design, { style, note: "Uploaded from the studio", changes: ["First proof."] });
   } catch (error) {
     if (error instanceof HostingConfigError) {
       console.error(error.message);

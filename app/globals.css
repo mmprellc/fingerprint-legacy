@@ -501,6 +501,17 @@ th, td { text-align: left; padding: 0.65rem 0.4rem; border-bottom: 1px solid var
 details { border-top: 1px solid var(--line); padding: 0.7rem 0; }
 summary { cursor: pointer; }
 
+.proof { display: grid; gap: 1.5rem; }
+.proof-toolbar, .proof-actions, .name-row, .version-row { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.proof-zoom { overflow: auto; background: white; border: 1px solid var(--line); max-height: 78vh; }
+.proof-zoom img { margin: 0 auto; }
+.proof-warn { color: #6b3a2a; }
+.proof-ok { color: var(--charcoal); }
+.version { width: 8rem; background: transparent; border: 1px solid var(--line); padding: 0.3rem; text-align: left; }
+.version.on { border-color: var(--gold-deep); }
+.name-row input { flex: 1; }
+.compare { display: grid; gap: 1rem; }
+
 @media (min-width: 800px) {
   .nav-toggle { display: none; }
   .nav {
