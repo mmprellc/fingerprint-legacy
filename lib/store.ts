@@ -39,6 +39,25 @@ export type Order = {
   emailDelivery?: { mode: "mock" | "resend"; to: string; subject: string; body: string; at: string };
   files?: { svg: boolean; png: boolean; pdf: boolean };
   error?: string;
+  approvedVersion?: number;
+};
+
+export type ProofVersion = {
+  number: number;
+  createdAt: string;
+  note: string;
+  style: PrintStyle;
+  sizeId: string;
+  productId: string;
+  warnings: string[];
+  changes: string[];
+};
+
+export type ProofComment = {
+  id: string;
+  at: string;
+  author: string;
+  text: string;
 };
 
 export type Design = {
@@ -50,6 +69,10 @@ export type Design = {
   productId: string;
   sizeId: string;
   frameId?: string;
+  versions?: ProofVersion[];
+  approvedVersion?: number;
+  comments?: ProofComment[];
+  shareToken?: string;
 };
 
 export type LaunchSignup = {

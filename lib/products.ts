@@ -45,11 +45,12 @@ export const products: Product[] = [
     details: [
       "Produced through Printful after payment and sent to the address you enter",
       "Standard shipping is included in the price",
-      "Choose 8×10, 11×14, or 16×20 inches",
+      "Choose 8×10, 11×14, 12×16, or 16×20 inches",
     ],
     sizes: [
       { id: "8x10", label: "8 × 10 in", inches: [8, 10] },
       { id: "11x14", label: "11 × 14 in", inches: [11, 14] },
+      { id: "12x16", label: "12 × 16 in", inches: [12, 16] },
       { id: "16x20", label: "16 × 20 in", inches: [16, 20] },
     ],
   },
@@ -122,13 +123,14 @@ export function formatMoney(cents: number) {
 const ARCHIVAL_VARIANTS = {
   "8x10": 4463,
   "11x14": 14125,
+  "12x16": 0,
   "16x20": 3877,
 } as const;
 
 export type ArchivalSize = keyof typeof ARCHIVAL_VARIANTS;
 
 export function isArchivalSize(value: string | undefined): value is ArchivalSize {
-  return value === "8x10" || value === "11x14" || value === "16x20";
+  return value === "8x10" || value === "11x14" || value === "12x16" || value === "16x20";
 }
 
 /** Built-in variant for the size. PRINTFUL_VARIANT_ARCHIVAL_<SIZE> overrides one cell. */

@@ -9,6 +9,12 @@ export function previewObjectKey(id: string) {
   return `designs/${id}/preview.png`;
 }
 
+export function designAssetKey(id: string, name: string) {
+  if (!/^dsn_[a-f0-9]+$/.test(id)) return null;
+  if (!/^v\d+\.png$|^core\d*\.png$|^ridge\d*\.png$|^approved\.png$/.test(name)) return null;
+  return `designs/${id}/${name}`;
+}
+
 const orderNames: Record<string, string> = {
   svg: "portrait.svg",
   png: "portrait.png",

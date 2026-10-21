@@ -38,7 +38,7 @@ export async function fulfillOrder(orderId: string) {
       style: design.style,
       period: design.period,
       inches: size.inches,
-      dpi: size.inches ? 200 : 160,
+      dpi: size.inches ? 300 : 160,
       frame: product.id === "framed",
     });
     const zip = new JSZip();
