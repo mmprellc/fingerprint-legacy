@@ -1,5 +1,6 @@
 import { pathLength, slicePath } from "./geometry";
-import { estimateWordWidth, fontSizeFor, planPortrait, ridgePitch, roleScale } from "./lettering";
+import { emphasisFaceFile, glyphWidth, loadRidgeFace } from "./glyphs";
+import { bodyTrackingEm, bodyWordGapEm, fontSizeFor, inPlaque, planPortrait, plaqueClearance, plaqueFor, ridgePitch, roleScale } from "./lettering";
 import { fontById } from "./preview";
 import type { Check } from "./audit";
 import type { ExtractResult, PrintStyle, Pt } from "./types";
@@ -55,10 +56,6 @@ class AimedGrid {
   }
 }
 
-function wordWidth(word: string, size: number, charRatio: number, tracking: number) {
-  return estimateWordWidth(word, size, charRatio, tracking);
-}
-
 /** The part of a run the glyphs actually occupy. A trimmed dedication is kept whole. */
 function inkSpan(points: Pt[], text: string, measure: (word: string) => number, gap: number) {
   const words = text.split(/\s+/).filter(Boolean);
@@ -76,28 +73,38 @@ function textSpans(result: ExtractResult, style: PrintStyle) {
   const ridges = result.ridges;
   const period = result.period;
   const font = fontById(style.font);
-  const ratio = font.charRatio;
+  const regular = loadRidgeFace(font.file);
+  const bold = loadRidgeFace(emphasisFaceFile(font.file));
   const fontSize = fontSizeFor(period, style.textScale || 1, font.capEm);
+  const widthOf = (word: string, role: "body" | "core" | "secondary" | "line") => {
+    const size = fontSize * roleScale(role);
+    const trackingEm = role === "body" ? bodyTrackingEm(style.textScale) : 0.045;
+    const gapEm = role === "body" ? bodyWordGapEm(style.textScale) : 0.16;
+    const face = role === "core" || role === "secondary" ? bold : regular;
+    return glyphWidth(face, word, size, -size * trackingEm, size * gapEm);
+  };
   const planned = planPortrait(
     ridges,
     style,
     [],
     period,
-    (word, role) => {
-      const size = fontSize * roleScale(role);
-      const tracking = role === "body" ? 0.04 : 0.045;
-      return wordWidth(word, size, ratio, -size * tracking);
-    },
-    fontSize * roleScale("body") * 0.16,
+    (word, role) => widthOf(word, role),
+    fontSize * roleScale("body") * bodyWordGapEm(style.textScale),
   );
   const spans: Pt[][] = [];
   planned.forEach((runs) => {
     for (const run of runs) {
+      if (run.role === "line" && run.points.length > 1) {
+        spans.push(run.points);
+        continue;
+      }
       if (!run.text) continue;
       const roleSize = fontSize * roleScale(run.role);
-      const tracking = run.role === "body" ? 0.04 : 0.045;
-      const gap = fontSize * roleScale("body") * 0.16;
-      const span = inkSpan(run.points, run.text, (word) => wordWidth(word, roleSize, ratio, -roleSize * tracking), gap);
+      const trackingEm = run.role === "body" ? bodyTrackingEm(style.textScale) : 0.045;
+      const gapEm = run.role === "body" ? bodyWordGapEm(style.textScale) : 0.16;
+      const gap = roleSize * gapEm;
+      const face = run.role === "core" || run.role === "secondary" ? bold : regular;
+      const span = inkSpan(run.points, run.text, (word) => glyphWidth(face, word, roleSize, -roleSize * trackingEm, gap), gap);
       if (span.length > 1) spans.push(span);
     }
   });
@@ -207,6 +214,8 @@ export function scoreFidelity(result: ExtractResult, style: PrintStyle): Fidelit
   if (!mask || !gray || !orient || !coherence || period < 4 || result.ridges.length < 8) return null;
 
   const spans = textSpans(result, style);
+  const plaque = plaqueFor(result.ridges, style, period);
+  const opening = plaque ? plaqueClearance(period, style.textScale || 1) : 0;
   const reach = ridgePitch(period) * COVER_REACH;
   const near = paintNear(spans, w, h, reach);
   // Spill uses the text itself, not the coverage halo, so a print that fills
@@ -220,9 +229,10 @@ export function scoreFidelity(result: ExtractResult, style: PrintStyle): Fidelit
     const row = y * w;
     for (let x = 0; x < w; x += step) {
       const inside = mask[row + x] === 1;
+      const onPlaque = Boolean(plaque && inPlaque(x, y, plaque, opening));
       if (inside) {
         ink++;
-        if (near[row + x]) hit++;
+        if (near[row + x] || onPlaque) hit++;
       } else if (body[row + x]) spill++;
     }
   }
@@ -237,6 +247,7 @@ export function scoreFidelity(result: ExtractResult, style: PrintStyle): Fidelit
     for (let x = 0; x < w; x += 4) {
       const i = row + x;
       if (!mask[i] || coherence[i] < 0.28) continue;
+      if (plaque && inPlaque(x, y, plaque, opening)) continue;
       flowN++;
       const nearest = grid.nearest(x, y, reach);
       if (!nearest) continue;
@@ -252,7 +263,21 @@ export function scoreFidelity(result: ExtractResult, style: PrintStyle): Fidelit
     photo[i] = dark ? 255 - tone : tone;
   }
   const inkRadius = Math.max(1.4, period * 0.36);
-  const drawn = paintInk(spans, w, h, inkRadius);
+  const drawnSpans = spans.slice();
+  if (plaque) {
+    const band = Math.max(2, period * 0.35);
+    const rx = plaque.rx + opening;
+    const ry = plaque.ry + opening;
+    for (let y = plaque.cy - ry; y <= plaque.cy + ry; y += band) {
+      const dy = (y - plaque.cy) / ry;
+      const half = rx * Math.sqrt(Math.max(0, 1 - dy * dy));
+      drawnSpans.push([
+        { x: plaque.cx - half, y },
+        { x: plaque.cx + half, y },
+      ]);
+    }
+  }
+  const drawn = paintInk(drawnSpans, w, h, inkRadius);
   // Whole-frame blocks, about two ridge spacings. Paper stays paper on both
   // sides, so the silhouette itself is part of the score. A missing half of
   // the oval disagrees; letter shapes and valley phase do not.
