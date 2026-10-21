@@ -76,10 +76,10 @@ export const RIDGE_DIVIDER = "·";
 export type RidgeToken = { text: string; name: boolean };
 
 /** Names take the dot. Every other pair of words keeps a single word space, at the same gap. */
-export function joinRidgeTokens(parts: RidgeToken[]) {
+export function joinRidgeTokens(parts: RidgeToken[], divider = RIDGE_DIVIDER) {
   let text = "";
   for (let i = 0; i < parts.length; i++) {
-    if (i > 0) text += parts[i - 1].name && parts[i].name ? ` ${RIDGE_DIVIDER} ` : " ";
+    if (i > 0) text += parts[i - 1].name && parts[i].name ? (divider ? ` ${divider} ` : " ") : " ";
     text += parts[i].text;
   }
   return text;
@@ -108,6 +108,8 @@ export function packBodyRuns(
   once = false,
   progress?: BodyProgress,
   caps?: Map<string, number>,
+  divider = RIDGE_DIVIDER,
+  hold?: Set<string>,
 ): PackedRun[] {
   const packed: PackedRun[] = [];
   const gapFor = (runIndex: number) => (typeof space === "number" ? space : space(runIndex));
@@ -228,7 +230,7 @@ export function packBodyRuns(
     const parts: RidgeToken[] = [];
     const leadOf = (name: boolean, previous: RidgeToken | undefined) => {
       if (!previous) return 0;
-      if (previous.name && name) return gap + measure(RIDGE_DIVIDER, runIndex) + gap;
+      if (previous.name && name) return divider ? gap + measure(divider, runIndex) + gap : gap;
       return gap;
     };
     const place = (token: string, name = false) => {
@@ -285,6 +287,7 @@ export function packBodyRuns(
     };
 
     const capOf = (idx: number) => caps?.get(names[idx]) ?? Number.POSITIVE_INFINITY;
+    const heldBack = (idx: number) => Boolean(hold?.has(names[idx]) && slotCount[idx] >= 1);
     const fillNames = () => {
       if (!names.length) return;
       let guard = 0;
@@ -293,7 +296,7 @@ export function packBodyRuns(
         if (once && slotCount.every((count) => count >= 1)) break;
         const floor = Math.min(...slotCount);
         const next = nameCursor.i % names.length;
-        if (slotCount[next] > floor || slotCount[next] >= capOf(next)) {
+        if (slotCount[next] > floor || slotCount[next] >= capOf(next) || heldBack(next)) {
           nameCursor.i += 1;
           continue;
         }
@@ -303,7 +306,7 @@ export function packBodyRuns(
           continue;
         }
         const take = (idx: number) => {
-          if (slotCount[idx] >= capOf(idx)) return false;
+          if (slotCount[idx] >= capOf(idx) || heldBack(idx)) return false;
           if (!tokensFit([{ text: names[idx], name: true }])) return false;
           place(names[idx], true);
           slotCount[idx] += 1;
@@ -338,7 +341,7 @@ export function packBodyRuns(
       if (verseWord === 0) {
         const mid = snap();
         fillNames();
-        if (!acceptable(joinRidgeTokens(parts))) restore(mid);
+        if (!acceptable(joinRidgeTokens(parts, divider))) restore(mid);
       }
     } else if (words) {
       const plan = versePlan(runIndex, words);
@@ -350,7 +353,7 @@ export function packBodyRuns(
         if (verseWord === 0) {
           const mid = snap();
           fillNames();
-          if (!acceptable(joinRidgeTokens(parts))) restore(mid);
+          if (!acceptable(joinRidgeTokens(parts, divider))) restore(mid);
         }
       } else {
         fillNames();
@@ -359,14 +362,14 @@ export function packBodyRuns(
       fillNames();
     }
 
-    const text = joinRidgeTokens(parts);
+    const text = joinRidgeTokens(parts, divider);
     if (!acceptable(text)) {
       restore(saved);
       // Eight words will not fit. One complete short verse still may, and that exemption is already the rule.
       const verse = versesAt.length ? versesAt[verseAt % versesAt.length] : null;
       if (verse && verse.length < MIN_BODY_WORDS && verseWord === 0 && legalTake(runIndex, verse, 0) === verse.length) {
-        if (placeVerseWords(verse, verse.length) && acceptable(joinRidgeTokens(parts))) {
-          packed.push({ points, text: joinRidgeTokens(parts) });
+        if (placeVerseWords(verse, verse.length) && acceptable(joinRidgeTokens(parts, divider))) {
+          packed.push({ points, text: joinRidgeTokens(parts, divider) });
           continue;
         }
         restore(saved);
@@ -935,6 +938,7 @@ function cycleStories(
   stories: string[],
   measure: (word: string) => number,
   gap: number,
+  repeat = true,
 ) {
   const texts = slots.map(() => "");
   if (!stories.length || !slots.length) return { texts, whole: 0 };
@@ -942,6 +946,7 @@ function cycleStories(
   let storyIndex = 0;
   let guard = 0;
   while (slot < slots.length && guard++ < slots.length * 8 + stories.length) {
+    if (!repeat && storyIndex >= stories.length) break;
     const story = stories[storyIndex % stories.length];
     const raw = storyWordsFlat(story);
     // A paragraph under eight words cannot start a ridge. Repeat it until it can,
@@ -1030,8 +1035,9 @@ function commitNameLine(
   length: number,
   caps: Map<string, number>,
   counts: number[],
+  mark = RIDGE_DIVIDER,
 ) {
-  const divider = measure(RIDGE_DIVIDER);
+  const divider = mark ? measure(mark) : 0;
   let used = 2;
   const parts: RidgeToken[] = [];
   const local = counts.slice();
@@ -1041,11 +1047,11 @@ function commitNameLine(
   const can = (idx: number) => {
     const cap = caps.get(names[idx]) ?? Number.POSITIVE_INFINITY;
     if ((local[idx] ?? 0) >= cap) return false;
-    const lead = parts.length ? gap + divider + gap : 0;
+    const lead = parts.length ? (mark ? gap + divider + gap : gap) : 0;
     return used + lead + measure(names[idx]) <= length - 1.5;
   };
   const put = (idx: number) => {
-    const lead = parts.length ? gap + divider + gap : 0;
+    const lead = parts.length ? (mark ? gap + divider + gap : gap) : 0;
     parts.push({ text: names[idx], name: true });
     used += lead + measure(names[idx]);
     local[idx] = (local[idx] ?? 0) + 1;
@@ -1072,7 +1078,7 @@ function commitNameLine(
     if (picked < 0) break;
     put(picked);
   }
-  const text = joinRidgeTokens(parts);
+  const text = joinRidgeTokens(parts, mark);
   if (nameWordCount(text) < MIN_BODY_WORDS) return null;
   if (!needed.some((index) => (local[index] ?? 0) > (counts[index] ?? 0))) return null;
   return { text, counts: local };
@@ -1087,11 +1093,13 @@ function fillEmptyWithNames(
   gap: number,
   caps: Map<string, number>,
   countsIn: number[],
+  mark = RIDGE_DIVIDER,
+  hold?: Set<string>,
 ) {
   if (!names.length) return;
   const counts = names.map((_, index) => countsIn[index] ?? 0);
   let cursor = 0;
-  const divider = measure(RIDGE_DIVIDER);
+  const divider = mark ? measure(mark) : 0;
   for (let slot = 0; slot < texts.length; slot++) {
     if (texts[slot]) continue;
     const length = pathLength(slots[slot].points);
@@ -1107,7 +1115,8 @@ function fillEmptyWithNames(
         const idx = (localCursor + dist) % names.length;
         const cap = caps.get(names[idx]) ?? Number.POSITIVE_INFINITY;
         if ((local[idx] ?? 0) >= cap) continue;
-        const lead = parts.length ? gap + divider + gap : 0;
+        if (hold?.has(names[idx]) && (local[idx] ?? 0) >= 1) continue;
+        const lead = parts.length ? (mark ? gap + divider + gap : gap) : 0;
         if (used + lead + measure(names[idx]) > length - 1.5) continue;
         if ((local[idx] ?? 0) < bestCount) {
           picked = idx;
@@ -1115,13 +1124,13 @@ function fillEmptyWithNames(
         }
       }
       if (picked < 0) break;
-      const lead = parts.length ? gap + divider + gap : 0;
+      const lead = parts.length ? (mark ? gap + divider + gap : gap) : 0;
       parts.push({ text: names[picked], name: true });
       used += lead + measure(names[picked]);
       local[picked] = (local[picked] ?? 0) + 1;
       localCursor = picked + 1;
     }
-    const text = joinRidgeTokens(parts);
+    const text = joinRidgeTokens(parts, mark);
     if (nameWordCount(text) < MIN_BODY_WORDS) continue;
     texts[slot] = text;
     local.forEach((count, index) => {
@@ -1298,6 +1307,8 @@ export function planPortrait(
   if (group.length) groups.push(group);
   const nameCursor = { i: 0 };
   const verseCursor = { i: 0 };
+  const nameDivider = style.nameGap === "space" ? "" : RIDGE_DIVIDER;
+  const heldNames = new Set((style.nameHold ?? []).map((name) => name.replace(/\s+/g, " ").trim()).filter(Boolean));
   const nameCaps = new Map<string, number>();
   for (const item of style.nameMax ?? []) {
     const name = item.name.replace(/\s+/g, " ").trim();
@@ -1324,6 +1335,8 @@ export function planPortrait(
       stories.length > 0,
       progress,
       nameCaps,
+      nameDivider,
+      heldNames,
     );
     packed.forEach((run, index) => {
       placed.push({ ridge: bodySlots[index].ridge, points: run.points, text: run.text });
@@ -1339,7 +1352,7 @@ export function planPortrait(
         .sort((a, b) => pathLength(b.points) - pathLength(a.points));
       for (const run of empty) {
         if (!needed.length) break;
-        const line = commitNameLine(source.names, needed, measureBody, gap, pathLength(run.points), nameCaps, progress.slotCount);
+        const line = commitNameLine(source.names, needed, measureBody, gap, pathLength(run.points), nameCaps, progress.slotCount, nameDivider);
         if (!line) continue;
         run.text = line.text;
         progress.slotCount = line.counts;
@@ -1378,12 +1391,15 @@ export function planPortrait(
       storySlots.push({ ridge: run.ridge, points: tail, placedIndex: index, tail: true });
     });
   }
-  const storyCycle = stories.length ? cycleStories(storySlots.map((slot) => slot.points), stories, measureBody, gap) : { texts: [], whole: 0 };
+  const repeatStories = style.filler !== "names" && style.filler !== "lines";
+  const storyCycle = stories.length
+    ? cycleStories(storySlots.map((slot) => slot.points), stories, measureBody, gap, repeatStories)
+    : { texts: [], whole: 0 };
   const shortStory = stories.some((story) => {
     const count = storyWordsFlat(story).length;
     return count > 0 && count < MIN_BODY_WORDS;
   });
-  if (source.names.length && (shortStory || storyCycle.whole < stories.length)) {
+  if (source.names.length && (style.filler === "names" || shortStory || storyCycle.whole < stories.length)) {
     fillEmptyWithNames(
       storyCycle.texts,
       storySlots,
@@ -1392,6 +1408,8 @@ export function planPortrait(
       gap,
       nameCaps,
       progress?.slotCount ?? source.names.map(() => 0),
+      nameDivider,
+      heldNames,
     );
   }
   const storiesDone = storyCycle.whole >= stories.length;
@@ -1450,7 +1468,7 @@ export function planPortrait(
       return nx * nx + ny * ny > 9;
     });
   };
-  const textReady = storiesDone || shortStory;
+  const textReady = storiesDone || shortStory || style.filler === "lines" || style.filler === "names";
   if (textReady || (stories.length === 0 && plaque)) {
     const leftovers = [
       ...(textReady
