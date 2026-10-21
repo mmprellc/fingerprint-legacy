@@ -866,6 +866,21 @@ function storyWordsFlat(story: string) {
   return sentenceWords(story).flatMap((sentence) => sentence);
 }
 
+/** A short paragraph is repeated until a ridge can hold it as a legal line. */
+function repeatWords(words: string[], min: number) {
+  const out: string[] = [];
+  let guard = 0;
+  while (out.length < min && words.length && guard++ < min) out.push(...words);
+  return out;
+}
+
+function expandedParagraph(story: string) {
+  const words = storyWordsFlat(story);
+  if (!words.length || words.length >= MIN_BODY_WORDS) return story;
+  const copies = Math.ceil(MIN_BODY_WORDS / words.length);
+  return Array(copies).fill(story.replace(/\s+/g, " ").trim()).join(" ");
+}
+
 function sentenceWordEnds(story: string) {
   const sentences = sentenceWords(story).filter((sentence) => sentence.length);
   const ends: number[] = [];
@@ -926,16 +941,62 @@ function cycleStories(
   let slot = 0;
   let storyIndex = 0;
   let guard = 0;
-  while (slot < slots.length && guard++ < slots.length * 3 + stories.length) {
+  while (slot < slots.length && guard++ < slots.length * 8 + stories.length) {
     const story = stories[storyIndex % stories.length];
-    const whole = flowWords(slots, texts, slot, storyWordsFlat(story), measure, gap);
+    const raw = storyWordsFlat(story);
+    // A paragraph under eight words cannot start a ridge. Repeat it until it can,
+    // then keep cycling. A long story keeps the original path, including the
+    // final sentence ending, so a full family story is unchanged.
+    if (raw.length > 0 && raw.length < MIN_BODY_WORDS) {
+      const whole = flowWords(slots, texts, slot, repeatWords(raw, MIN_BODY_WORDS), measure, gap);
+      if (whole.placed) {
+        slot = whole.slot;
+        storyIndex += 1;
+        continue;
+      }
+      const expanded = expandedParagraph(story);
+      const snapshot = texts.slice();
+      const expandedWords = storyWordsFlat(expanded);
+      let bestTexts: string[] | null = null;
+      let bestSlot = slot;
+      for (const end of sentenceWordEnds(expanded)) {
+        if (end < MIN_BODY_WORDS) continue;
+        for (let i = 0; i < texts.length; i++) texts[i] = snapshot[i];
+        const partial = flowWords(slots, texts, slot, expandedWords.slice(0, end), measure, gap);
+        if (!partial.placed) continue;
+        bestTexts = texts.slice();
+        bestSlot = partial.slot;
+      }
+      if (bestTexts) {
+        for (let i = 0; i < texts.length; i++) texts[i] = bestTexts[i];
+        slot = bestSlot;
+        storyIndex += 1;
+        continue;
+      }
+      for (let i = 0; i < texts.length; i++) texts[i] = snapshot[i];
+      let rescued = false;
+      for (let attempt = 1; attempt < stories.length; attempt++) {
+        const other = stories[(storyIndex + attempt) % stories.length];
+        const otherRaw = storyWordsFlat(other);
+        const payload = otherRaw.length >= MIN_BODY_WORDS ? otherRaw : repeatWords(otherRaw, MIN_BODY_WORDS);
+        const laid = flowWords(slots, texts, slot, payload, measure, gap);
+        if (!laid.placed) continue;
+        slot = laid.slot;
+        storyIndex += attempt + 1;
+        rescued = true;
+        break;
+      }
+      if (rescued) continue;
+      break;
+    }
+    const whole = flowWords(slots, texts, slot, raw, measure, gap);
     if (whole.placed) {
       slot = whole.slot;
       storyIndex += 1;
       continue;
     }
     const snapshot = texts.slice();
-    const words = storyWordsFlat(story);
+    const words = raw;
     let bestTexts: string[] | null = null;
     let bestSlot = slot;
     for (const end of sentenceWordEnds(story)) {
@@ -951,6 +1012,123 @@ function cycleStories(
     break;
   }
   return { texts, whole: storyIndex };
+}
+
+function nameWordCount(text: string) {
+  return text.split(/\s+/).filter((word) => word && word !== RIDGE_DIVIDER).length;
+}
+
+/**
+ * Put the names that have not been set yet onto one ridge, repeating the list
+ * only far enough to reach eight words. A line that cannot reach eight words is left blank.
+ */
+function commitNameLine(
+  names: string[],
+  needed: number[],
+  measure: (word: string) => number,
+  gap: number,
+  length: number,
+  caps: Map<string, number>,
+  counts: number[],
+) {
+  const divider = measure(RIDGE_DIVIDER);
+  let used = 2;
+  const parts: RidgeToken[] = [];
+  const local = counts.slice();
+  const still = new Set(needed.filter((index) => (local[index] ?? 0) < 1));
+  let cursor = 0;
+  let guard = 0;
+  const can = (idx: number) => {
+    const cap = caps.get(names[idx]) ?? Number.POSITIVE_INFINITY;
+    if ((local[idx] ?? 0) >= cap) return false;
+    const lead = parts.length ? gap + divider + gap : 0;
+    return used + lead + measure(names[idx]) <= length - 1.5;
+  };
+  const put = (idx: number) => {
+    const lead = parts.length ? gap + divider + gap : 0;
+    parts.push({ text: names[idx], name: true });
+    used += lead + measure(names[idx]);
+    local[idx] = (local[idx] ?? 0) + 1;
+    still.delete(idx);
+    cursor = idx + 1;
+  };
+  while (guard++ < names.length * 10 + 8) {
+    const words = nameWordCount(joinRidgeTokens(parts));
+    if (!still.size && words >= MIN_BODY_WORDS) break;
+    let picked = -1;
+    for (const idx of still) {
+      if (!can(idx)) continue;
+      picked = idx;
+      break;
+    }
+    if (picked < 0 && words < MIN_BODY_WORDS) {
+      for (let dist = 0; dist < names.length; dist++) {
+        const idx = (cursor + dist) % names.length;
+        if (!can(idx)) continue;
+        picked = idx;
+        break;
+      }
+    }
+    if (picked < 0) break;
+    put(picked);
+  }
+  const text = joinRidgeTokens(parts);
+  if (nameWordCount(text) < MIN_BODY_WORDS) return null;
+  if (!needed.some((index) => (local[index] ?? 0) > (counts[index] ?? 0))) return null;
+  return { text, counts: local };
+}
+
+/** After stories, leftover ridges take another even pass of the names. */
+function fillEmptyWithNames(
+  texts: string[],
+  slots: { points: Pt[] }[],
+  names: string[],
+  measure: (word: string) => number,
+  gap: number,
+  caps: Map<string, number>,
+  countsIn: number[],
+) {
+  if (!names.length) return;
+  const counts = names.map((_, index) => countsIn[index] ?? 0);
+  let cursor = 0;
+  const divider = measure(RIDGE_DIVIDER);
+  for (let slot = 0; slot < texts.length; slot++) {
+    if (texts[slot]) continue;
+    const length = pathLength(slots[slot].points);
+    let used = 2;
+    const parts: RidgeToken[] = [];
+    const local = counts.slice();
+    let localCursor = cursor;
+    let guard = 0;
+    while (guard++ < names.length * 8 + 12) {
+      let picked = -1;
+      let bestCount = Infinity;
+      for (let dist = 0; dist < names.length; dist++) {
+        const idx = (localCursor + dist) % names.length;
+        const cap = caps.get(names[idx]) ?? Number.POSITIVE_INFINITY;
+        if ((local[idx] ?? 0) >= cap) continue;
+        const lead = parts.length ? gap + divider + gap : 0;
+        if (used + lead + measure(names[idx]) > length - 1.5) continue;
+        if ((local[idx] ?? 0) < bestCount) {
+          picked = idx;
+          bestCount = local[idx] ?? 0;
+        }
+      }
+      if (picked < 0) break;
+      const lead = parts.length ? gap + divider + gap : 0;
+      parts.push({ text: names[picked], name: true });
+      used += lead + measure(names[picked]);
+      local[picked] = (local[picked] ?? 0) + 1;
+      localCursor = picked + 1;
+    }
+    const text = joinRidgeTokens(parts);
+    if (nameWordCount(text) < MIN_BODY_WORDS) continue;
+    texts[slot] = text;
+    local.forEach((count, index) => {
+      counts[index] = count;
+    });
+    cursor = localCursor;
+  }
 }
 
 /**
@@ -1152,6 +1330,23 @@ export function planPortrait(
     });
   }
   const measureBody = (word: string) => measure(word, "body");
+  if (progress && source.names.length) {
+    let needed = source.names.map((_, index) => index).filter((index) => (progress.slotCount[index] ?? 0) < 1);
+    if (needed.length) {
+      const empty = placed
+        .filter((run) => !run.text)
+        .slice()
+        .sort((a, b) => pathLength(b.points) - pathLength(a.points));
+      for (const run of empty) {
+        if (!needed.length) break;
+        const line = commitNameLine(source.names, needed, measureBody, gap, pathLength(run.points), nameCaps, progress.slotCount);
+        if (!line) continue;
+        run.text = line.text;
+        progress.slotCount = line.counts;
+        needed = needed.filter((index) => (line.counts[index] ?? 0) < 1);
+      }
+    }
+  }
   const kept: Pt[][] = [];
   const keptSamples: Pt[] = [];
   const remember = (points: Pt[]) => {
@@ -1184,6 +1379,21 @@ export function planPortrait(
     });
   }
   const storyCycle = stories.length ? cycleStories(storySlots.map((slot) => slot.points), stories, measureBody, gap) : { texts: [], whole: 0 };
+  const shortStory = stories.some((story) => {
+    const count = storyWordsFlat(story).length;
+    return count > 0 && count < MIN_BODY_WORDS;
+  });
+  if (source.names.length && (shortStory || storyCycle.whole < stories.length)) {
+    fillEmptyWithNames(
+      storyCycle.texts,
+      storySlots,
+      source.names,
+      measureBody,
+      gap,
+      nameCaps,
+      progress?.slotCount ?? source.names.map(() => 0),
+    );
+  }
   const storiesDone = storyCycle.whole >= stories.length;
   const storyFill = storyCycle.texts;
   const shortened = new Map<number, Pt[]>();
@@ -1240,9 +1450,10 @@ export function planPortrait(
       return nx * nx + ny * ny > 9;
     });
   };
-  if (storiesDone || (stories.length === 0 && plaque)) {
+  const textReady = storiesDone || shortStory;
+  if (textReady || (stories.length === 0 && plaque)) {
     const leftovers = [
-      ...(storiesDone
+      ...(textReady
         ? [
             ...placed.flatMap((run, index) => (!run.text && !filledEmpty.has(index) ? [{ ridge: run.ridge, points: run.points }] : [])),
             ...tails.map((tail) => ({ ridge: tail.ridge, points: tail.points })),
@@ -1253,8 +1464,8 @@ export function planPortrait(
     const lineGap = tangle;
     const lineKeep = period * 2.4;
     for (const slot of leftovers) {
-      // A drawn line is only for an outer ridge the names could not fill, and never beside the plaque.
-      if (storiesDone && ((rims[slot.ridge] ?? 0) < 0.62 || !farFromPlaque(slot.points))) continue;
+      // A drawn line is only for an outer ridge the words could not fill, and never beside the plaque.
+      if (textReady && ((rims[slot.ridge] ?? 0) < 0.62 || !farFromPlaque(slot.points))) continue;
       for (const piece of trimAgainst(slot.points, keptSamples, lineGap, lineKeep)) {
         for (const part of trimAgainst(piece, keptSamples, lineGap, lineKeep)) {
           if (crossesKept(part, kept) || !farFromPlaque(part)) continue;
