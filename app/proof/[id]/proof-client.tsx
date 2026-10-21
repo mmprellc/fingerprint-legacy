@@ -160,11 +160,10 @@ export function ProofClient({ model }: { model: ProofModel }) {
   }
 
   function adopt(version: ProofVersion, nextCapacity?: string, previous?: number) {
-    setVersions((items) => {
-      const next = items.some((item) => item.number === version.number) ? items : [...items, version];
-      versionsRef.current = next;
-      return next;
-    });
+    const items = versionsRef.current;
+    const next = items.some((item) => item.number === version.number) ? items : [...items, version];
+    versionsRef.current = next;
+    setVersions(next);
     applyVersion(version, nextCapacity);
     if (previous && previous !== version.number) setCompare(previous);
   }

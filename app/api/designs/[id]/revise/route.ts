@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { readPrintStyle } from "@/lib/fingerprint/read-style";
 import type { PrintStyle } from "@/lib/fingerprint/types";
-import { describeStyleChange } from "@/lib/proof/diff";
+import { describeStyleChange, describeVersionChange } from "@/lib/proof/diff";
 import { proofCapacity, recordVersion } from "@/lib/proof/record";
 import { getDesign } from "@/lib/store";
 
@@ -40,12 +40,17 @@ export async function POST(request: Request, context: { params: Promise<{ id: st
     });
   }
   const style = readPrintStyle(body?.style ?? design.style);
-  const changes = describeStyleChange(design.style, style);
+  const sizeId = typeof body?.sizeId === "string" && body.sizeId ? body.sizeId : design.sizeId;
+  const productId = typeof body?.productId === "string" && body.productId ? body.productId : design.productId;
+  const previous = design.versions?.at(-1);
+  const changes = previous
+    ? describeVersionChange({ style: previous.style, sizeId: previous.sizeId }, { style, sizeId })
+    : describeStyleChange(design.style, style);
   const note = typeof body?.note === "string" && body.note.trim() ? body.note.trim().slice(0, 180) : changes[0];
   const saved = await recordVersion(design, {
     style,
-    sizeId: body?.sizeId,
-    productId: body?.productId,
+    sizeId,
+    productId,
     note,
     changes,
   });

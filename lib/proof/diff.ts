@@ -51,7 +51,8 @@ export function describeStyleChange(before: PrintStyle, after: PrintStyle) {
   notes.push(...freq.filter((line) => line.includes(" to ")));
   if (!same(before.scriptures, after.scriptures)) notes.push("Updated the verses.");
   if (!same(before.stories, after.stories)) notes.push("Updated the stories.");
-  if ((before.filler || "") !== (after.filler || "")) notes.push(`Filler is now ${after.filler || "stories"}.`);
+  const fillerOf = (style: PrintStyle) => (style.filler === "names" || style.filler === "lines" ? style.filler : "stories");
+  if (fillerOf(before) !== fillerOf(after)) notes.push(`Filler is now ${fillerOf(after)}.`);
   if ((before.nameGap || "dot") !== (after.nameGap || "dot")) notes.push(after.nameGap === "space" ? "Names use a word space." : "Names use a centered dot.");
   if (Math.abs((before.textScale || 1) - (after.textScale || 1)) > 0.01) notes.push((after.textScale || 1) < 0.82 ? "Type is the smaller size." : "Type is the standard size.");
   return notes.length ? notes : ["Saved the proof as shown."];
