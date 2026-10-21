@@ -1,5 +1,5 @@
+import { emphasisFaceFile, metricsWidth } from "./font-metrics";
 import { escapeXml, toPathD } from "./geometry";
-import { emphasisFaceFile, glyphWidth, loadRidgeFace } from "./glyphs";
 import { bodyTrackingEm, bodyWordGapEm, fallbackWidth, fontSizeFor, plaqueFor, planPortrait, ribbonPath, roleScale } from "./lettering";
 import { FONTS, INK_PRESETS, type PrintStyle, type Ridge } from "./types";
 
@@ -120,7 +120,6 @@ export function buildPreviewSvg(
   for (let printIndex = 0; printIndex < mapped.length; printIndex++) {
     const ridges = mapped[printIndex];
     const bodySize = fontSize * roleScale("body");
-    const boldFace = loadRidgeFace(emphasisFaceFile(font.file));
     const planned = planPortrait(
       ridges,
       style,
@@ -130,8 +129,8 @@ export function buildPreviewSvg(
         const size = fontSize * roleScale(role);
         const trackingEm = role === "body" ? bodyTrackingEm(style.textScale) : 0.045;
         const gapEm = role === "body" ? bodyWordGapEm(style.textScale) : 0.16;
-        const face = role === "core" || role === "secondary" ? boldFace : loadRidgeFace(font.file);
-        return glyphWidth(face, word, size, -size * trackingEm, size * gapEm);
+        const file = role === "core" || role === "secondary" ? emphasisFaceFile(font.file) : font.file;
+        return metricsWidth(file, word, size, -size * trackingEm, size * gapEm);
       },
       bodySize * bodyWordGapEm(style.textScale),
     );

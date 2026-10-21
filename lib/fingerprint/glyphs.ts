@@ -50,9 +50,7 @@ export function glyphWidth(font: GlyphFont, word: string, fontSize: number, trac
 }
 
 /** Bold companion of the ridge face, same size, for the dedication loops. */
-export function emphasisFaceFile(bodyFile: string) {
-  return bodyFile.includes("Baskerville") ? "LibreBaskerville-Bold.ttf" : "CormorantGaramond-Bold.ttf";
-}
+export { emphasisFaceFile } from "./font-metrics";
 
 /**
  * Extra ink around a dedication glyph, in ems. Cormorant Bold is only about
