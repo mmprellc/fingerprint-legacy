@@ -5,6 +5,19 @@ import { renderStudioPortrait } from "@/lib/fingerprint/studio-art";
 import { hasRidgeWords } from "@/lib/studio-default";
 import { readPrintStyle } from "@/lib/fingerprint/read-style";
 import { DEFAULT_FONT, DEFAULT_PRESET, type PrintStyle } from "@/lib/fingerprint/types";
+import type { Check } from "@/lib/fingerprint/audit";
+
+const NO_STORE = { "Cache-Control": "no-store" };
+
+function publishCheck(check: Check) {
+  return {
+    id: check.id,
+    label: check.label,
+    passed: check.passed,
+    score: typeof check.score === "number" && Number.isFinite(check.score) ? Math.round(check.score * 1000) / 1000 : null,
+    detail: check.detail,
+  };
+}
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -24,10 +37,10 @@ export async function POST(request: Request) {
   const file = form.get("file");
   const ridges = String(form.get("ridges") || "auto");
   if (!(file instanceof File)) {
-    return NextResponse.json({ error: "Choose a fingerprint photo first." }, { status: 400 });
+    return NextResponse.json({ error: "Choose a fingerprint photo first." }, { status: 400, headers: NO_STORE });
   }
   if (file.size > 12_000_000) {
-    return NextResponse.json({ error: "That photo is larger than 12 MB. Try a smaller one." }, { status: 400 });
+    return NextResponse.json({ error: "That photo is larger than 12 MB. Try a smaller one." }, { status: 400, headers: NO_STORE });
   }
   try {
     const input = Buffer.from(await file.arrayBuffer());
@@ -50,7 +63,7 @@ export async function POST(request: Request) {
             "The portrait is drawn from this photo once those words are here.",
           ],
         },
-      });
+      }, { headers: NO_STORE });
     }
     const { gray, width, height } = await prepareStudioCapture(input);
     const result = producePortrait(gray, width, height, style, { ridges: tone });
@@ -62,6 +75,9 @@ export async function POST(request: Request) {
           result.period,
         )
       : "";
+    const shape = result.attempts
+      .flatMap((attempt) => attempt.checks)
+      .find((check) => check.id === "shape" && typeof check.score === "number");
     return NextResponse.json({
       accepted: result.accepted,
       width: result.width,
@@ -72,6 +88,7 @@ export async function POST(request: Request) {
       portraitPng,
       textScale: result.textScale,
       retake: result.retake,
+      shapeScore: typeof shape?.score === "number" ? Math.round(shape.score * 1000) / 1000 : null,
       metrics: {
         sharpness: round(result.metrics.sharpness),
         contrast: round(result.metrics.contrast),
@@ -81,7 +98,9 @@ export async function POST(request: Request) {
       attempts: result.attempts.map((attempt) => ({
         profile: attempt.profile,
         passed: attempt.passed,
+        ridges: attempt.ridges,
         failed: attempt.checks.filter((check) => !check.passed).map((check) => check.id),
+        checks: attempt.checks.map(publishCheck),
       })),
       ridges: result.accepted
         ? result.ridges.map((ridge) => ({
@@ -90,11 +109,11 @@ export async function POST(request: Request) {
             points: ridge.points.map((point) => ({ x: round(point.x), y: round(point.y) })),
           }))
         : [],
-    });
+    }, { headers: NO_STORE });
   } catch {
     return NextResponse.json(
       { error: "We could not read that image. Use a JPEG or PNG of the fingerprint." },
-      { status: 400 },
+      { status: 400, headers: NO_STORE },
     );
   }
 }

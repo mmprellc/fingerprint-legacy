@@ -13,8 +13,6 @@ import type { ExtractResult, PrintStyle, Pt } from "./types";
 const COVER_REACH = 1.05;
 const COVER_MIN = 0.95;
 const IOU_MIN = 0.9;
-/** A real print can sit just under the strict outline and still be reviewable. */
-export const RELAXED_IOU_MIN = 0.82;
 const FLOW_MIN = 0.72;
 const LIKENESS_MIN = 0.4;
 
@@ -346,6 +344,7 @@ export function auditFidelity(result: ExtractResult, style: PrintStyle): Check[]
       id: "coverage",
       label: "Oval density",
       passed: score.coverage >= COVER_MIN,
+      score: score.coverage,
       detail: `${pct(score.coverage)} of the oval is within reach of a line of text. Target ${pct(COVER_MIN)}.`,
     },
     {
@@ -359,12 +358,14 @@ export function auditFidelity(result: ExtractResult, style: PrintStyle): Check[]
       id: "flow",
       label: "Ridge flow",
       passed: score.flow >= FLOW_MIN,
+      score: score.flow,
       detail: `Orientation agreement across the print is ${pct(score.flow)}.`,
     },
     {
       id: "likeness",
       label: "Visual likeness",
       passed: score.likeness >= LIKENESS_MIN,
+      score: score.likeness,
       detail: `Blurred portrait vs photo correlation is ${score.likeness.toFixed(2)}.`,
     },
   ];

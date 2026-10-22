@@ -476,6 +476,10 @@ textarea.verses { min-height: 160px; }
 .retake p { margin: 0; }
 .retake ul { margin: 0.45rem 0 0; padding-left: 1.15rem; }
 .retake li { margin: 0.2rem 0; }
+.match-details { margin-top: 0.55rem; font-size: 0.86rem; }
+.match-details summary { cursor: pointer; }
+.match-details ul { margin: 0.4rem 0 0; padding-left: 1.15rem; }
+.match-details li { margin: 0.15rem 0; }
 .camera { display: grid; gap: 0.5rem; }
 .camera video { width: 100%; background: #111; }
 

@@ -27,6 +27,39 @@ type Draft = {
 
 type SampleFile = { width: number; height: number; period: number; ridges: Ridge[] };
 
+type MatchCheck = { id: string; passed: boolean; score: number | null; detail: string };
+type MatchAttempt = { profile: string; passed: boolean; ridges?: number; checks?: MatchCheck[] };
+
+function formatScore(score: number | null | undefined) {
+  return typeof score === "number" && Number.isFinite(score) ? score.toFixed(3) : "n/a";
+}
+
+function MatchDetails({ attempts }: { attempts: MatchAttempt[] }) {
+  if (!attempts.length) return null;
+  const shape = attempts
+    .map((attempt) => (attempt.checks ?? []).find((check) => check.id === "shape"))
+    .find((check) => typeof check?.score === "number");
+  const lines = attempts.flatMap((attempt) => {
+    const checks = attempt.checks ?? [];
+    const attemptShape = checks.find((check) => check.id === "shape");
+    const failed = checks.filter((check) => !check.passed);
+    return [
+      `${attempt.profile}: ${attempt.ridges ?? 0} ridges, shape ${formatScore(attemptShape?.score)}`,
+      ...failed.map((check) => `${attempt.profile} ${check.id} ${formatScore(check.score)}. ${check.detail}`),
+    ];
+  });
+  return (
+    <details className="match-details" open>
+      <summary>Match details. Shape {formatScore(shape?.score)}</summary>
+      <ul>
+        {lines.map((line, index) => (
+          <li key={`${index}-${line}`}>{line}</li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 const UPLOAD_EDGE = 1600;
 const UPLOAD_BUDGET = 3_800_000;
 
@@ -121,10 +154,13 @@ export function StudioClient({
   const [view, setView] = useState<"words" | "lines" | "overlay" | "side">("words");
   const [zoom, setZoom] = useState(1);
   const [tone, setTone] = useState<"auto" | "dark" | "light">("auto");
+  const [toneReady, setToneReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [retake, setRetake] = useState<{ title: string; detail: string; steps: string[] } | null>(null);
+  const [attempts, setAttempts] = useState<MatchAttempt[]>([]);
   const [notice, setNotice] = useState("");
+  const lastUpload = useRef<{ file: File; slot: number } | null>(null);
   const [portraitUrl, setPortraitUrl] = useState("");
   const portraitUrlRef = useRef("");
   const [seedLines, setSeedLines] = useState(initialOccasion?.lines ?? ["A name", "A date", "A place they loved"]);
@@ -156,6 +192,19 @@ export function StudioClient({
   }, [autoload, couple, initialOccasion, initialPiece]);
 
   useEffect(() => () => stopCamera(), []);
+
+  useEffect(() => {
+    setToneReady(true);
+    setTone("auto");
+    const onShow = (event: PageTransitionEvent) => {
+      if (!event.persisted) return;
+      setTone("auto");
+      setRetake(null);
+      setAttempts([]);
+    };
+    window.addEventListener("pageshow", onShow);
+    return () => window.removeEventListener("pageshow", onShow);
+  }, []);
 
   const product = productById(productId);
   const preset = INK_PRESETS.find((item) => item.id === style.preset) ?? INK_PRESETS[0];
@@ -201,6 +250,7 @@ export function StudioClient({
         scale: 1,
       };
       setRetake(null);
+      setAttempts([]);
       setPrints((current) => {
         const next = current.slice(0, 2);
         next[slot] = draft;
@@ -233,6 +283,7 @@ export function StudioClient({
         scale: slot ? 0.94 : 1,
       };
       setRetake(null);
+      setAttempts([]);
       setPrints((current) => {
         const next = current.slice(0, 2);
         next[slot] = draft;
@@ -256,6 +307,7 @@ export function StudioClient({
       const firstLines = occasion?.lines ?? ["Elena Voss", "June 14", "the orchard", "I choose you"];
       const secondLines = ["Jonah Ellis", "June 14", "the orchard", "I choose you", "the song we danced"];
       setRetake(null);
+      setAttempts([]);
       setPrints([
         draftFrom("loop", "First print", loop, firstLines, 0),
         draftFrom("whorl", "Second print", whorl, secondLines, 1),
@@ -288,9 +340,12 @@ export function StudioClient({
     setNotice("Add a name and a verse. Those words are the ridges of this print. The sample names are left off a photo you upload.");
   }
 
-  async function onFile(file: File | null, slot: number) {
+  async function onFile(file: File | null, slot: number, ridges?: "auto" | "dark" | "light") {
     if (!file) return;
+    const chosen = ridges ?? "auto";
+    if (!ridges) setTone("auto");
     setError("");
+    setAttempts([]);
     stopCamera();
     const nextStyle = clearSampleRidgeStyle(style);
     if (!hasRidgeWords(nextStyle)) {
@@ -300,13 +355,14 @@ export function StudioClient({
     setBusy(true);
     if (isSampleRidgeStyle(style)) setStyle(nextStyle);
     pendingFile.current = null;
+    lastUpload.current = { file, slot };
     try {
       const prepared = await shrinkForUpload(file);
       const body = new FormData();
       body.set("file", prepared);
-      body.set("ridges", tone);
+      body.set("ridges", chosen);
       body.set("style", JSON.stringify(nextStyle));
-      const response = await fetch("/api/studio/extract", { method: "POST", body });
+      const response = await fetch("/api/studio/extract", { method: "POST", body, cache: "no-store" });
       const payload = await readJson<{
         accepted?: boolean;
         error?: string;
@@ -317,9 +373,11 @@ export function StudioClient({
         height?: number;
         period?: number;
         ridges?: Draft["ridges"];
+        attempts?: MatchAttempt[];
         retake?: { title: string; detail: string; steps: string[] } | null;
       }>(response);
       if (!response.ok) throw new Error(payload.error || "The print could not be read.");
+      setAttempts(Array.isArray(payload.attempts) ? payload.attempts : []);
       if (!payload.accepted || !payload.portraitPng) {
         setRetake(payload.retake ?? { title: "Retake the photo.", detail: "We could not read a fingerprint from that photo.", steps: [] });
         setNotice("");
@@ -582,8 +640,10 @@ export function StudioClient({
                 ))}
               </ul>
             ) : null}
+            <MatchDetails attempts={attempts} />
           </div>
         ) : null}
+        {!retake && attempts.length ? <MatchDetails attempts={attempts} /> : null}
         {error ? <p className="alert" role="alert">{error}</p> : null}
         {busy ? <p>Reading the ridges…</p> : null}
         <h2>The print</h2>
@@ -617,11 +677,26 @@ export function StudioClient({
         ) : null}
         <label className="field">
           <span>Ridges in the photo</span>
-          <select value={tone} onChange={(event) => setTone(event.target.value as typeof tone)}>
-            <option value="auto">Detect automatically</option>
-            <option value="dark">Dark ridges on light paper</option>
-            <option value="light">Light ridges on a dark ground</option>
-          </select>
+          {toneReady ? (
+            <select
+              value={tone}
+              autoComplete="off"
+              onChange={(event) => {
+                const next = event.target.value as typeof tone;
+                setTone(next);
+                const pending = lastUpload.current;
+                if (pending) void onFile(pending.file, pending.slot, next);
+              }}
+            >
+              <option value="auto">Detect automatically</option>
+              <option value="dark">Dark ridges on light paper</option>
+              <option value="light">Light ridges on a dark ground</option>
+            </select>
+          ) : (
+            <select value="auto" autoComplete="off" disabled>
+              <option value="auto">Detect automatically</option>
+            </select>
+          )}
         </label>
         {prints.length < 2 ? (
           <div>

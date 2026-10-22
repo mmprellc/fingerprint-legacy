@@ -7,6 +7,7 @@ import { paymentsMode } from "@/lib/fulfill";
 import { StudioClient } from "./studio-client";
 
 export const metadata: Metadata = { title: "Studio" };
+export const dynamic = "force-dynamic";
 
 export default async function StudioPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const params = await searchParams;

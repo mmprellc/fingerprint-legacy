@@ -9,6 +9,9 @@ export function middleware(request: NextRequest) {
     "Content-Security-Policy",
     contentSecurityPolicy({ host }),
   );
+  if (url.pathname === "/studio" || url.pathname.startsWith("/api/studio/")) {
+    response.headers.set("Cache-Control", "no-store");
+  }
   return response;
 }
 

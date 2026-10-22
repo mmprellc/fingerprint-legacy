@@ -1,5 +1,5 @@
 import { auditLayout, capHeight, legibleScale, type Check } from "./audit";
-import { auditFidelity, RELAXED_IOU_MIN } from "./fidelity";
+import { auditFidelity } from "./fidelity";
 import { extractFromGray } from "./engine";
 import { countCrossings, curvatureReport } from "./geometry";
 import { pitchSep, ridgePitch } from "./lettering";
@@ -25,6 +25,7 @@ export type RetakeGuidance = {
 export type PortraitAttempt = {
   profile: string;
   passed: boolean;
+  ridges: number;
   checks: Check[];
 };
 
@@ -57,7 +58,8 @@ const FLIPPED: Profile = { id: "flipped", inkDelta: 30, spacingLimit: 0.72, spac
 /** The only attempts, in order. The first is the Randy print. Later ones run only if that one fails. */
 export const PORTRAIT_PROFILES: Profile[] = [LOCKED, TIGHTER, FULLER, FLIPPED];
 
-const RELAXED_SILHOUETTE = "The silhouette is a little looser than the strict match. You can still review this portrait.";
+const RELAXED_SILHOUETTE =
+  "The silhouette is a little looser than the strict match. This portrait follows the outline read from the print. You can still review it.";
 
 const BLUR_FLOOR = 8;
 const CONTRAST_FLOOR = 28;
@@ -321,29 +323,39 @@ function auditGeometry(result: ExtractResult): Check[] {
   const curveOk = curve.p95Radius >= pitch * 1.15 && curve.worstRadius >= pitch * 0.9;
 
   return [
-    { id: "inside-mask", label: "Text inside the silhouette", passed: inside, detail: inside ? "The words stay inside the ink." : `${Math.round(outsideFrac * 100)}% of the text sits outside the ink.` },
+    {
+      id: "inside-mask",
+      label: "Text inside the silhouette",
+      passed: inside,
+      score: 1 - outsideFrac,
+      detail: inside ? "The words stay inside the ink." : `${Math.round(outsideFrac * 100)}% of the text sits outside the ink.`,
+    },
     {
       id: "spacing",
       label: "Even ridge pitch",
       passed: spaced,
+      score: pitch ? spacingP50 / pitch : 0,
       detail: `Typical gap ${spacingP50.toFixed(1)}px (${pitch ? (spacingP50 / pitch).toFixed(2) : "0"}× the line pitch), ${Math.round(closeAtPitch * 100)}% of samples too close.`,
     },
     {
       id: "max-gap",
       label: "No large gaps",
       passed: gapOk,
+      score: pitch ? holeMax / pitch : 0,
       detail: `The widest open spot is ${holeMax.toFixed(1)}px (${pitch ? (holeMax / pitch).toFixed(2) : "0"}× the line pitch). Nine tenths of the oval is within ${holeP90.toFixed(1)}px.`,
     },
     {
       id: "crossings",
       label: "No crossed ridges",
       passed: crossings === 0,
+      score: crossings,
       detail: crossings === 0 ? "No ridge paths cross." : `Ridge paths cross ${crossings} times.`,
     },
     {
       id: "curvature",
       label: "Smooth ridge curves",
       passed: curveOk,
+      score: Number.isFinite(curve.worstRadius) ? curve.worstRadius : 0,
       detail: `Tightest bend ${formatRadius(curve.worstRadius)}px, 95th percentile ${formatRadius(curve.p95Radius)}px (${pitch ? (curve.p95Radius / pitch).toFixed(2) : "0"}× the line pitch).`,
     },
   ];
@@ -358,12 +370,13 @@ function attemptScore(checks: Check[]) {
   return checks.reduce((sum, check) => sum + (check.passed ? 1 : 0), 0);
 }
 
-/** Strict outline missed, and nothing else did. A chopped or unreadable print still fails. */
-function relaxedShape(checks: Check[]) {
+/**
+ * The print was read, and the only miss is the outline score.
+ * Any IoU is reviewable. Blur, contrast, a chopped print, or a bad likeness still stop.
+ */
+function outlineOnly(checks: Check[]) {
   const failed = checks.filter((check) => !check.passed);
-  if (failed.length !== 1 || failed[0].id !== "shape") return false;
-  const score = failed[0].score;
-  return typeof score === "number" && score >= RELAXED_IOU_MIN;
+  return failed.length === 1 && failed[0].id === "shape";
 }
 
 /** These describe the photograph and the extracted ridges, not how much text the customer typed. */
@@ -390,7 +403,11 @@ function textShortfallOnly(checks: Check[]) {
   return failed.every((check) => !SILHOUETTE_IDS.has(check.id));
 }
 
-function unmatched(checks: Check[]): RetakeGuidance {
+function formatScore(score: number | undefined) {
+  return typeof score === "number" && Number.isFinite(score) ? score.toFixed(3) : "n/a";
+}
+
+function unmatched(checks: Check[], ridges = 0): RetakeGuidance {
   const names = checks.find((check) => check.id === "names" && !check.passed);
   const geometryIds = new Set(["shape", "flow", "likeness", "inside-mask", "spacing", "max-gap", "crossings", "curvature"]);
   const geometryOk = checks.filter((check) => geometryIds.has(check.id)).every((check) => check.passed);
@@ -406,13 +423,15 @@ function unmatched(checks: Check[]): RetakeGuidance {
       ],
     );
   }
-  const failed = checks
-    .filter((check) => !check.passed && check.id !== "coverage")
-    .map((check) => check.label.toLowerCase());
+  const failed = checks.filter((check) => !check.passed && check.id !== "coverage");
+  const failedLabels = failed.map((check) => check.label.toLowerCase());
+  const shape = checks.find((check) => check.id === "shape");
+  const failedScores = failed.map((check) => `${check.id} ${formatScore(check.score)}`).join(", ");
+  const measured = ` Shape score ${formatScore(shape?.score)}. Ridges ${ridges}.${failedScores ? ` Failed checks: ${failedScores}.` : ""}`;
   return retake(
     "unmatched",
     "We could not match this print closely enough.",
-    failed.length ? `Still short on ${failed.join(", ")} after the locked attempts.` : "The ridges did not settle into a clean portrait.",
+    (failedLabels.length ? `Still short on ${failedLabels.join(", ")} after the locked attempts.` : "The ridges did not settle into a clean portrait.") + measured,
     [
       "Retake with the full print in frame, in even light, and in focus.",
       "If the ink is smudged, roll a fresh print and photograph that.",
@@ -502,14 +521,15 @@ export function producePortrait(
       }
     }
     const passed = checks.every((check) => check.passed);
-    attempts.push({ profile: profile.id, passed, checks });
+    attempts.push({ profile: profile.id, passed, ridges: extracted.ridges.length, checks });
     const score = attemptScore(checks);
     if (!best || score > best.score) best = { score, extracted, checks, scale };
     // Another extract will not add words. A density or name shortfall on a
     // readable silhouette is the portrait, not a photo retake.
     if (passed || textShortfallOnly(checks)) return accept(extracted, scale);
-    // A close outline miss is still this print. A chopped photo keeps failing.
-    if (relaxedShape(checks)) return accept(extracted, scale, RELAXED_SILHOUETTE);
+    // A readable print whose only miss is the outline is still this print.
+    // The ridges are already clipped to the extracted silhouette.
+    if (extracted.ridges.length >= 8 && outlineOnly(checks)) return accept(extracted, scale, RELAXED_SILHOUETTE);
   }
 
   const failed = best?.checks ?? [];
@@ -522,7 +542,7 @@ export function producePortrait(
     ridgesAreDark: best?.extracted.ridgesAreDark ?? true,
     warnings: [...(best?.extracted.warnings ?? []), ...(edgeNote ? [edgeNote] : [])],
     attempts,
-    retake: unmatched(failed),
+    retake: unmatched(failed, best?.extracted.ridges.length ?? 0),
     metrics,
     textScale: best?.scale ?? (style.textScale || 1),
   };
