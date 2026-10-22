@@ -4,7 +4,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { formatMoney, productById } from "@/lib/products";
 import { HostingConfigError } from "@/lib/runtime";
-import { DASHBOARD_COOKIE, listLaunchSignups, listOrders, verifyDashboard, type LaunchSignup, type Order } from "@/lib/store";
+import { DASHBOARD_COOKIE, getDesign, listDesigns, listLaunchSignups, listOrders, verifyDashboard, type LaunchSignup, type Order } from "@/lib/store";
 
 export const metadata: Metadata = { title: "Orders" };
 export const dynamic = "force-dynamic";
@@ -14,8 +14,9 @@ export default async function DashboardPage() {
   if (!verifyDashboard(jar.get(DASHBOARD_COOKIE)?.value)) redirect("/dashboard/login");
   let orders: Order[] = [];
   let signups: LaunchSignup[] = [];
+  let proofsOnFile: Awaited<ReturnType<typeof listDesigns>> = [];
   try {
-    [orders, signups] = await Promise.all([listOrders(), listLaunchSignups()]);
+    [orders, signups, proofsOnFile] = await Promise.all([listOrders(), listLaunchSignups(), listDesigns()]);
   } catch (error) {
     if (error instanceof HostingConfigError) {
       return (
@@ -28,11 +29,45 @@ export default async function DashboardPage() {
     }
     throw error;
   }
+  const proofs = new Map<string, { versions: number; approved?: number }>();
+  await Promise.all(orders.map(async (order) => {
+    const design = await getDesign(order.designId).catch(() => null);
+    if (!design) return;
+    proofs.set(order.id, { versions: design.versions?.length ?? 0, approved: order.approvedVersion ?? design.approvedVersion });
+  }));
   return (
     <article className="page">
       <p className="kicker">Owner</p>
       <h1>Orders</h1>
       <form action="/api/dashboard/logout" method="post"><button className="btn-ghost" type="submit">Sign out</button></form>
+      <h2>Proofs</h2>
+      {proofsOnFile.length === 0 ? (
+        <p className="note">No proofs yet.</p>
+      ) : (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr><th>When</th><th>Portrait</th><th>Versions</th><th>Approval</th></tr>
+            </thead>
+            <tbody>
+              {proofsOnFile.map((design) => (
+                <tr key={design.id}>
+                  <td>{new Date(design.createdAt).toLocaleString()}</td>
+                  <td><Link href={`/proof/${design.id}`}>{design.style.headerName || "Untitled portrait"}</Link></td>
+                  <td>{design.versions?.length ?? 0}</td>
+                  <td>
+                    {design.approvedVersion ? (
+                      <>Approved: Version {design.approvedVersion} <a href={`/api/designs/${design.id}/asset/approved.png`}>Approved file</a></>
+                    ) : (
+                      "Not approved"
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
       <h2>Launch list</h2>
       {signups.length === 0 ? (
         <p className="note">No one has joined the list yet.</p>
@@ -71,6 +106,7 @@ export default async function DashboardPage() {
                 <th>Status</th>
                 <th>Print desk</th>
                 <th>Files</th>
+                <th>Proof</th>
               </tr>
             </thead>
             <tbody>
@@ -85,8 +121,14 @@ export default async function DashboardPage() {
                     </td>
                     <td>{order.email}</td>
                     <td><span className="pill">{order.status}</span>{order.error ? <div className="note">{order.error}</div> : null}</td>
-                    <td>{order.printful ? `${order.printful.mode} · ${order.printful.status ?? ""} ${order.printful.id ?? ""}` : "—"}</td>
-                    <td>{order.files ? <a href={`/api/orders/${order.id}/files/zip`}>Download</a> : "—"}</td>
+                    <td>{order.printful ? `${order.printful.mode}, ${order.printful.status ?? ""} ${order.printful.id ?? ""}` : "None"}</td>
+                    <td>{order.files ? <a href={`/api/orders/${order.id}/files/zip`}>Download</a> : "None"}</td>
+                    <td>
+                      {proofs.get(order.id)?.versions ? `${proofs.get(order.id)?.versions} versions` : "None"}
+                      {proofs.get(order.id)?.approved ? (
+                        <div className="note">Approved: Version {proofs.get(order.id)?.approved}. <a href={`/api/designs/${order.designId}/asset/approved.png`}>Approved file</a></div>
+                      ) : null}
+                    </td>
                   </tr>
                 );
               })}

@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
+import { publicOrigin } from "@/lib/runtime";
 import { DASHBOARD_COOKIE, dashboardConfigError, dashboardPassword, signDashboard } from "@/lib/store";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
-  const origin = new URL(request.url).origin;
+  const origin = publicOrigin(request);
   const form = await request.formData();
   if (dashboardConfigError()) {
     return NextResponse.redirect(new URL("/dashboard/login?error=config", origin), 303);

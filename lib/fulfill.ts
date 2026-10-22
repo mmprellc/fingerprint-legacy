@@ -29,16 +29,17 @@ export async function fulfillOrder(orderId: string) {
 
   const design = await getDesign(existing.designId);
   if (!design) throw new Error("The design for this order is missing");
-  const product = productById(existing.productId);
-  const size = product.sizes.find((item) => item.id === existing.sizeId) ?? product.sizes[0];
+  const approved = design.versions?.find((version) => version.number === (existing.approvedVersion ?? design.approvedVersion));
+  const product = productById(approved?.productId || existing.productId);
+  const size = product.sizes.find((item) => item.id === (approved?.sizeId || existing.sizeId)) ?? product.sizes[0];
 
   try {
     const art = await renderArtwork({
       prints: design.prints,
-      style: design.style,
+      style: approved?.style ?? design.style,
       period: design.period,
       inches: size.inches,
-      dpi: size.inches ? 200 : 160,
+      dpi: size.inches ? 300 : 160,
       frame: product.id === "framed",
     });
     const zip = new JSZip();

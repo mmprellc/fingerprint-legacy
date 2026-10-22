@@ -39,7 +39,30 @@ export function readPrintStyle(value: Partial<PrintStyle> | null | undefined): P
     ...(text(style.marriage, 80) ? { marriage: text(style.marriage, 80) } : {}),
     ...(text(style.marriageDate, 40) ? { marriageDate: text(style.marriageDate, 40) } : {}),
     ...(names.length ? { names } : {}),
+    ...(nameMaxOf(style.nameMax) ? { nameMax: nameMaxOf(style.nameMax) } : {}),
+    ...(holdOf(style.nameHold).length ? { nameHold: holdOf(style.nameHold) } : {}),
+    ...(style.filler === "stories" || style.filler === "names" || style.filler === "lines" ? { filler: style.filler } : {}),
+    ...(style.nameGap === "space" || style.nameGap === "dot" ? { nameGap: style.nameGap } : {}),
     ...(scriptures.length ? { scriptures } : {}),
     ...(stories.length ? { stories } : {}),
   };
+}
+
+function nameMaxOf(value: unknown) {
+  if (!Array.isArray(value)) return undefined;
+  const items = value
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const name = text((item as { name?: unknown }).name, 80);
+      const max = Number((item as { max?: unknown }).max);
+      if (!name || !Number.isFinite(max)) return null;
+      return { name, max: Math.min(20, Math.max(1, Math.round(max))) };
+    })
+    .filter((item): item is { name: string; max: number } => Boolean(item))
+    .slice(0, 80);
+  return items.length ? items : undefined;
+}
+
+function holdOf(value: unknown) {
+  return list(value, 80, 80);
 }

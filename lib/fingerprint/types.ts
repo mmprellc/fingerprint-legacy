@@ -114,6 +114,12 @@ export type PrintStyle = {
   scriptures?: string[];
   /** Whole paragraphs placed after the names and verses. A paragraph that does not fit is left off. */
   stories?: string[];
+  /** What fills ridges after the names, verses, and stories. Stories are the default when any story is set. */
+  filler?: "stories" | "names" | "lines";
+  /** Space between names. A dot is the default. Verses and stories always use a word space. */
+  nameGap?: "dot" | "space";
+  /** Listed in the first pass, then skipped when names are repeated. */
+  nameHold?: string[];
 };
 
 export const FONTS: { id: RidgeFontId; label: string; file: string; family: string; charRatio: number; capEm: number }[] = [

@@ -39,6 +39,25 @@ export type Order = {
   emailDelivery?: { mode: "mock" | "resend"; to: string; subject: string; body: string; at: string };
   files?: { svg: boolean; png: boolean; pdf: boolean };
   error?: string;
+  approvedVersion?: number;
+};
+
+export type ProofVersion = {
+  number: number;
+  createdAt: string;
+  note: string;
+  style: PrintStyle;
+  sizeId: string;
+  productId: string;
+  warnings: string[];
+  changes: string[];
+};
+
+export type ProofComment = {
+  id: string;
+  at: string;
+  author: string;
+  text: string;
 };
 
 export type Design = {
@@ -50,6 +69,10 @@ export type Design = {
   productId: string;
   sizeId: string;
   frameId?: string;
+  versions?: ProofVersion[];
+  approvedVersion?: number;
+  comments?: ProofComment[];
+  shareToken?: string;
 };
 
 export type LaunchSignup = {
@@ -132,6 +155,24 @@ export async function getOrder(id: string) {
 export async function listOrders() {
   if (usingPostgres()) return listOrdersPg();
   return readOrders();
+}
+
+/** Recent proofs for the owner book. Newest first. */
+export async function listDesigns() {
+  if (usingPostgres()) return listDesignsPg();
+  let names: string[] = [];
+  try {
+    names = await fs.readdir(path.join(root, "designs"));
+  } catch {
+    return [];
+  }
+  const designs: Design[] = [];
+  for (const name of names) {
+    const design = await getDesign(name);
+    if (design) designs.push(design);
+  }
+  designs.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  return designs.slice(0, 40);
 }
 
 export async function joinLaunchList(input: Omit<LaunchSignup, "id" | "createdAt" | "email"> & { email: string }) {
@@ -366,6 +407,12 @@ async function getDesignPg(id: string) {
   const db = await sql();
   const rows = await db<{ payload: Design | string }[]>`SELECT payload FROM designs WHERE id = ${id} LIMIT 1`;
   return rows[0] ? asJson<Design>(rows[0].payload) : null;
+}
+
+async function listDesignsPg() {
+  const db = await sql();
+  const rows = await db<{ payload: Design | string }[]>`SELECT payload FROM designs ORDER BY created_at DESC LIMIT 40`;
+  return rows.map((row) => asJson<Design>(row.payload));
 }
 
 async function createOrderPg(order: Order) {

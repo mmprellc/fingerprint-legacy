@@ -344,24 +344,28 @@ export function auditFidelity(result: ExtractResult, style: PrintStyle): Check[]
       id: "coverage",
       label: "Oval density",
       passed: score.coverage >= COVER_MIN,
+      score: score.coverage,
       detail: `${pct(score.coverage)} of the oval is within reach of a line of text. Target ${pct(COVER_MIN)}.`,
     },
     {
       id: "shape",
       label: "Silhouette shape",
       passed: score.iou >= IOU_MIN,
+      score: score.iou,
       detail: `IoU with the ink mask is ${pct(score.iou)}.`,
     },
     {
       id: "flow",
       label: "Ridge flow",
       passed: score.flow >= FLOW_MIN,
+      score: score.flow,
       detail: `Orientation agreement across the print is ${pct(score.flow)}.`,
     },
     {
       id: "likeness",
       label: "Visual likeness",
       passed: score.likeness >= LIKENESS_MIN,
+      score: score.likeness,
       detail: `Blurred portrait vs photo correlation is ${score.likeness.toFixed(2)}.`,
     },
   ];
