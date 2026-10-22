@@ -2,7 +2,7 @@ import sharp from "sharp";
 import { designAssetKey, putBytes } from "../files";
 import { renderArtwork } from "../fingerprint/render-print";
 import type { PrintStyle } from "../fingerprint/types";
-import { productById } from "../products";
+import { catalogSize, productById } from "../products";
 import { saveDesign, type Design, type ProofVersion } from "../store";
 import { capacityLine, contentWords, ridgeCapacity } from "./capacity";
 import { proofWarnings } from "./quality";
@@ -32,7 +32,7 @@ export function proofCapacity(
   productId?: string,
 ) {
   const product = productById(productId || design.productId);
-  const size = product.sizes.find((item) => item.id === (sizeId || design.sizeId)) ?? product.sizes[0];
+  const size = catalogSize(product.id, sizeId || design.sizeId);
   const ridges = design.prints[0]?.ridges ?? [];
   const sizeLabel = size?.inches ? size.label.replaceAll("×", "x") : undefined;
   return capacityLine(contentWords(style), ridgeCapacity(ridges, design.period, style.textScale || 1), sizeLabel);
@@ -44,7 +44,7 @@ export async function recordVersion(
   input: { style: PrintStyle; sizeId?: string; productId?: string; note: string; changes: string[] },
 ) {
   const product = productById(input.productId || design.productId);
-  const size = product.sizes.find((item) => item.id === (input.sizeId || design.sizeId)) ?? product.sizes[0];
+  const size = catalogSize(product.id, input.sizeId || design.sizeId);
   design.productId = product.id;
   design.sizeId = size.id;
   design.style = input.style;
@@ -81,7 +81,7 @@ export async function recordVersion(
 
 export async function renderApproved(design: Design, version: ProofVersion) {
   const product = productById(version.productId);
-  const size = product.sizes.find((item) => item.id === version.sizeId) ?? product.sizes[0];
+  const size = catalogSize(product.id, version.sizeId);
   const art = await renderArtwork({
     prints: design.prints,
     style: version.style,

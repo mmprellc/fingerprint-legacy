@@ -125,6 +125,7 @@ export function ProofClient({ model }: { model: ProofModel }) {
   const [saving, setSaving] = useState(false);
   const [approving, setApproving] = useState(false);
   const [message, setMessage] = useState("");
+  const [revertStatus, setRevertStatus] = useState("");
   const [request, setRequest] = useState("");
   const [capacity, setCapacity] = useState(model.capacity);
   const approveQueued = useRef(false);
@@ -224,7 +225,8 @@ export function ProofClient({ model }: { model: ProofModel }) {
     const previous = current;
     const source = shown.number;
     setSaving(true);
-    setMessage("");
+    setRevertStatus("Saving...");
+    setMessage("Saving...");
     try {
       const response = await fetch(`/api/designs/${model.id}/revise`, {
         method: "POST",
@@ -234,13 +236,17 @@ export function ProofClient({ model }: { model: ProofModel }) {
       const payload = await readJson<{ error?: string; version?: ProofVersion; capacity?: string }>(response);
       if (!response.ok || !payload.version) throw new Error(payload.error || "The version could not be restored.");
       adopt(payload.version, payload.capacity, previous);
-      setMessage(payload.version.note);
+      const note = payload.version.note || `Reverted to Version ${source} (saved as Version ${payload.version.number})`;
+      setRevertStatus(note);
+      setMessage(note);
       if (approveQueued.current) {
         approveQueued.current = false;
         await markApproved(payload.version.number);
       }
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "The version could not be restored.");
+      const note = error instanceof Error ? error.message : "The version could not be restored.";
+      setRevertStatus(note);
+      setMessage(note);
     } finally {
       setSaving(false);
     }
@@ -297,7 +303,7 @@ export function ProofClient({ model }: { model: ProofModel }) {
           <label className="zoom">Zoom <input type="range" min={1} max={3} step={0.1} value={zoom} aria-label="Zoom" onChange={(event) => setZoom(Number(event.target.value))} /></label>
         </div>
         <div className="proof-zoom">
-          {isFrameSize(draft.sizeId) && closeup === "print" ? (
+          {draft.productId === "framed" && isFrameSize(draft.sizeId) && closeup === "print" ? (
             <FrameMockup finish={model.frameId || "black"} size={draft.sizeId} label="Framed preview">
               <img src={`/api/designs/${model.id}/asset/${picture}`} alt="Framed proof" style={{ transform: `scale(${zoom})` }} />
             </FrameMockup>
@@ -391,8 +397,7 @@ export function ProofClient({ model }: { model: ProofModel }) {
         </label>
         <label className="field"><span>Print size</span>
           <select aria-label="Print size" value={draft.sizeId} onChange={(event) => {
-            const picked = sizeChoices.find((size) => size.id === event.target.value);
-            setDraft({ ...draft, sizeId: event.target.value, productId: picked?.productId || draft.productId });
+            setDraft({ ...draft, sizeId: event.target.value });
           }}>
             {sizeChoices.map((size) => <option key={size.id} value={size.id}>{size.label}</option>)}
           </select>
@@ -440,7 +445,8 @@ export function ProofClient({ model }: { model: ProofModel }) {
         ) : (
           <p className="note">Choose another version to see them side by side.</p>
         )}
-        {shown ? <button className="btn-ghost" type="button" disabled={saving} onClick={() => void revert()}>Revert to this version</button> : null}
+        {revertStatus ? <p className="note" role="status">{revertStatus}</p> : null}
+        {shown ? <button className="btn-ghost" type="button" disabled={saving} onClick={() => void revert()}>{revertStatus === "Saving..." ? "Saving..." : "Revert to this version"}</button> : null}
         <p className="note">Family link: <a href={share}>{share}</a></p>
         <ul>{comments.map((comment) => <li key={comment.id}><strong>{comment.author}</strong> {comment.text}</li>)}</ul>
       </section>

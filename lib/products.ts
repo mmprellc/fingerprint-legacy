@@ -115,6 +115,18 @@ export function productById(id: string) {
   return products.find((product) => product.id === id) ?? products[0];
 }
 
+/** The size on this format, or the same size from another format when this one does not sell it. */
+export function catalogSize(productId: string, sizeId: string | undefined) {
+  const product = productById(productId);
+  const own = product.sizes.find((item) => item.id === sizeId);
+  if (own) return own;
+  for (const candidate of products) {
+    const found = candidate.sizes.find((item) => item.id === sizeId);
+    if (found) return found;
+  }
+  return product.sizes[0];
+}
+
 export function formatMoney(cents: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(cents / 100);
 }
