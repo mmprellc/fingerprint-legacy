@@ -127,6 +127,12 @@ export function catalogSize(productId: string, sizeId: string | undefined) {
   return product.sizes[0];
 }
 
+/** The size this format actually sells. A borrowed size is only for the on-screen proof. */
+export function soldSize(productId: string, sizeId: string | undefined) {
+  const product = productById(productId);
+  return product.sizes.find((item) => item.id === sizeId) ?? product.sizes[0];
+}
+
 export function formatMoney(cents: number) {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(cents / 100);
 }

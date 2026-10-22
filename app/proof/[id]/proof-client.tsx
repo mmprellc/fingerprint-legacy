@@ -130,7 +130,9 @@ export function ProofClient({ model }: { model: ProofModel }) {
   const [capacity, setCapacity] = useState(model.capacity);
   const approveQueued = useRef(false);
   const versionsRef = useRef(versions);
-  versionsRef.current = versions;
+  const currentRef = useRef(current);
+  const savingRef = useRef(false);
+  const approvingRef = useRef(false);
   const shown = versions.find((version) => version.number === current) ?? versions.at(-1);
   const other = versions.find((version) => version.number === compare);
   const warnings = shown?.warnings ?? [];
@@ -155,6 +157,7 @@ export function ProofClient({ model }: { model: ProofModel }) {
   }, [compare, shown, versions]);
 
   function applyVersion(version: ProofVersion, nextCapacity?: string) {
+    currentRef.current = version.number;
     setCurrent(version.number);
     setDraft(draftFrom(version.style, version.sizeId, version.productId));
     if (nextCapacity) setCapacity(nextCapacity);
@@ -164,15 +167,21 @@ export function ProofClient({ model }: { model: ProofModel }) {
     const items = versionsRef.current;
     const next = items.some((item) => item.number === version.number) ? items : [...items, version];
     versionsRef.current = next;
+    currentRef.current = version.number;
     setVersions(next);
     applyVersion(version, nextCapacity);
     if (previous && previous !== version.number) setCompare(previous);
   }
 
   async function markApproved(number: number | undefined) {
-    if (!number || approving) return;
+    if (approvingRef.current) return;
+    if (!number) {
+      setMessage("Choose a version to approve.");
+      return;
+    }
+    approvingRef.current = true;
     setApproving(true);
-    setMessage("");
+    setMessage(`Approving Version ${number}.`);
     try {
       const response = await fetch(`/api/designs/${model.id}/approve`, {
         method: "POST",
@@ -182,22 +191,28 @@ export function ProofClient({ model }: { model: ProofModel }) {
       const payload = await readJson<{ error?: string; approvedVersion?: number }>(response);
       if (!response.ok || !payload.approvedVersion) throw new Error(payload.error || "The proof could not be approved.");
       setApproved(payload.approvedVersion);
-      setCurrent(payload.approvedVersion);
       const version = versionsRef.current.find((item) => item.number === payload.approvedVersion);
-      if (version) setDraft(draftFrom(version.style, version.sizeId, version.productId));
+      if (version) applyVersion(version);
+      else {
+        currentRef.current = payload.approvedVersion;
+        setCurrent(payload.approvedVersion);
+      }
       setMessage(`Approved: Version ${payload.approvedVersion}`);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "The proof could not be approved.");
     } finally {
+      approvingRef.current = false;
       setApproving(false);
     }
   }
 
   async function save() {
-    if (saving) return;
-    const previous = current;
+    if (savingRef.current) return;
+    const previous = currentRef.current;
+    savingRef.current = true;
     setSaving(true);
     setMessage("");
+    let queuedNumber: number | undefined;
     try {
       const style = styleFrom(model.style, draft);
       const response = await fetch(`/api/designs/${model.id}/revise`, {
@@ -209,24 +224,30 @@ export function ProofClient({ model }: { model: ProofModel }) {
       if (!response.ok || !payload.version) throw new Error(payload.error || "The revision could not be saved.");
       adopt(payload.version, payload.capacity, previous);
       setMessage(payload.version.changes.join(" "));
-      if (approveQueued.current) {
-        approveQueued.current = false;
-        await markApproved(payload.version.number);
-      }
+      if (approveQueued.current) queuedNumber = payload.version.number;
     } catch (error) {
+      approveQueued.current = false;
       setMessage(error instanceof Error ? error.message : "The revision could not be saved.");
     } finally {
+      savingRef.current = false;
       setSaving(false);
+    }
+    if (queuedNumber) {
+      approveQueued.current = false;
+      await markApproved(queuedNumber);
     }
   }
 
   async function revert() {
-    if (!shown || saving) return;
-    const previous = current;
-    const source = shown.number;
+    const sourceVersion = versionsRef.current.find((item) => item.number === currentRef.current) ?? versionsRef.current.at(-1);
+    if (!sourceVersion || savingRef.current) return;
+    const previous = currentRef.current;
+    const source = sourceVersion.number;
+    savingRef.current = true;
     setSaving(true);
     setRevertStatus("Saving...");
     setMessage("Saving...");
+    let queuedNumber: number | undefined;
     try {
       const response = await fetch(`/api/designs/${model.id}/revise`, {
         method: "POST",
@@ -239,22 +260,28 @@ export function ProofClient({ model }: { model: ProofModel }) {
       const note = payload.version.note || `Reverted to Version ${source} (saved as Version ${payload.version.number})`;
       setRevertStatus(note);
       setMessage(note);
-      if (approveQueued.current) {
-        approveQueued.current = false;
-        await markApproved(payload.version.number);
-      }
+      if (approveQueued.current) queuedNumber = payload.version.number;
     } catch (error) {
+      approveQueued.current = false;
       const note = error instanceof Error ? error.message : "The version could not be restored.";
       setRevertStatus(note);
       setMessage(note);
     } finally {
+      savingRef.current = false;
       setSaving(false);
+    }
+    if (queuedNumber) {
+      approveQueued.current = false;
+      await markApproved(queuedNumber);
     }
   }
 
   async function interpret() {
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSaving(true);
     setMessage("");
+    let queuedNumber: number | undefined;
     try {
       const response = await fetch(`/api/designs/${model.id}/interpret`, {
         method: "POST",
@@ -264,28 +291,38 @@ export function ProofClient({ model }: { model: ProofModel }) {
       const payload = await readJson<{ ok?: boolean; reason?: string; error?: string; version?: ProofVersion; env?: string }>(response);
       if (!response.ok) throw new Error(payload.error || "The request could not be read.");
       if (!payload.ok || !payload.version) {
+        approveQueued.current = false;
         setMessage(payload.reason || `Free-text changes need ${payload.env || "OPENAI_API_KEY"}. The controls below still save a revision.`);
         return;
       }
-      adopt(payload.version, undefined, current);
+      adopt(payload.version, undefined, currentRef.current);
       setMessage(payload.version.changes.join(" "));
       setRequest("");
+      if (approveQueued.current) queuedNumber = payload.version.number;
     } catch (error) {
+      approveQueued.current = false;
       setMessage(error instanceof Error ? error.message : "The request could not be read.");
     } finally {
+      savingRef.current = false;
       setSaving(false);
+    }
+    if (queuedNumber) {
+      approveQueued.current = false;
+      await markApproved(queuedNumber);
     }
   }
 
   function approve(event: { preventDefault: () => void; stopPropagation: () => void }) {
     event.preventDefault();
     event.stopPropagation();
-    if (saving) {
+    if (approvingRef.current) return;
+    if (savingRef.current) {
       approveQueued.current = true;
       setMessage("This version will be approved as soon as the save finishes.");
       return;
     }
-    void markApproved(shown?.number);
+    const number = currentRef.current || versionsRef.current.at(-1)?.number;
+    void markApproved(number);
   }
 
   const picture = closeup === "print" ? `v${shown?.number ?? 1}.png` : closeup === "core" ? `core${shown?.number ?? 1}.png` : `ridge${shown?.number ?? 1}.png`;
@@ -318,7 +355,7 @@ export function ProofClient({ model }: { model: ProofModel }) {
         {message ? <p className="note" role="status">{message}</p> : null}
         <div className="proof-actions">
           <button className="btn-gold" type="button" disabled={approving} onClick={approve}>
-            {approved === shown?.number && shown ? `Approved: Version ${shown.number}` : "Approve proof"}
+            {approving ? "Approving..." : approved === shown?.number && shown ? `Approved: Version ${shown.number}` : "Approve proof"}
           </button>
           {approved ? <a className="btn-gold" href={`/checkout?design=${model.id}`}>Continue to checkout</a> : <p className="note">Approve a version before checkout.</p>}
           {approved ? <p className="note">Approved: Version {approved}</p> : null}

@@ -162,7 +162,10 @@ export function StudioClient({
   const [notice, setNotice] = useState("");
   const lastUpload = useRef<{ file: File; slot: number } | null>(null);
   const [portraitUrl, setPortraitUrl] = useState("");
+  const [portraitReady, setPortraitReady] = useState(false);
   const portraitUrlRef = useRef("");
+  const readGen = useRef(0);
+  const portraitGen = useRef(0);
   const [seedLines, setSeedLines] = useState(initialOccasion?.lines ?? ["A name", "A date", "A place they loved"]);
   const [occasionSlug, setOccasionSlug] = useState(initialOccasion?.slug ?? "");
   const [linesOpen, setLinesOpen] = useState(() => !hasList(initialPiece?.style.names) && !hasList(initialPiece?.style.scriptures) && !hasList(initialOccasion?.lines));
@@ -230,8 +233,21 @@ export function StudioClient({
     return built.svg;
   }, [prints, style, period, view, preset.ink]);
 
-  async function loadAddress(jsonUrl: string, imageUrl: string, label: string, slot: number) {
+  function beginRead() {
+    const gen = readGen.current + 1;
+    readGen.current = gen;
+    setPortraitReady(false);
     setBusy(true);
+    return gen;
+  }
+
+  function endRead(gen: number) {
+    if (gen !== readGen.current) return;
+    setBusy(false);
+  }
+
+  async function loadAddress(jsonUrl: string, imageUrl: string, label: string, slot: number) {
+    const gen = beginRead();
     setError("");
     try {
       const data = (await fetch(jsonUrl).then((response) => response.json())) as SampleFile;
@@ -259,12 +275,12 @@ export function StudioClient({
     } catch {
       setError("The print could not be loaded.");
     } finally {
-      setBusy(false);
+      endRead(gen);
     }
   }
 
   async function loadNamed(name: string, lines: string[], slot: number) {
-    setBusy(true);
+    const gen = beginRead();
     setError("");
     try {
       const data = (await fetch(`/samples/${name}.json`).then((response) => response.json())) as SampleFile;
@@ -292,12 +308,12 @@ export function StudioClient({
     } catch {
       setError("The sample print could not be loaded.");
     } finally {
-      setBusy(false);
+      endRead(gen);
     }
   }
 
   async function loadCouple(occasion?: Occasion) {
-    setBusy(true);
+    const gen = beginRead();
     setError("");
     try {
       const [loop, whorl] = await Promise.all([
@@ -315,7 +331,7 @@ export function StudioClient({
     } catch {
       setError("The paired samples could not be loaded.");
     } finally {
-      setBusy(false);
+      endRead(gen);
     }
   }
 
@@ -323,6 +339,7 @@ export function StudioClient({
     if (portraitUrlRef.current.startsWith("blob:")) URL.revokeObjectURL(portraitUrlRef.current);
     portraitUrlRef.current = "";
     setPortraitUrl("");
+    setPortraitReady(false);
   }
 
   function holdForWords(file: File, slot: number, nextStyle: PrintStyle) {
@@ -352,7 +369,7 @@ export function StudioClient({
       holdForWords(file, slot, nextStyle);
       return;
     }
-    setBusy(true);
+    const gen = beginRead();
     if (isSampleRidgeStyle(style)) setStyle(nextStyle);
     pendingFile.current = null;
     lastUpload.current = { file, slot };
@@ -376,6 +393,7 @@ export function StudioClient({
         attempts?: MatchAttempt[];
         retake?: { title: string; detail: string; steps: string[] } | null;
       }>(response);
+      if (gen !== readGen.current) return;
       if (!response.ok) throw new Error(payload.error || "The print could not be read.");
       setAttempts(Array.isArray(payload.attempts) ? payload.attempts : []);
       if (!payload.accepted || !payload.portraitPng) {
@@ -417,9 +435,9 @@ export function StudioClient({
         return next.filter(Boolean);
       });
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "The print could not be read.");
+      if (gen === readGen.current) setError(reason instanceof Error ? reason.message : "The print could not be read.");
     } finally {
-      setBusy(false);
+      endRead(gen);
     }
   }
 
@@ -464,6 +482,8 @@ export function StudioClient({
   }
 
   async function checkout() {
+    if (busy || !portraitReady) return;
+    const gen = readGen.current;
     setBusy(true);
     setError("");
     try {
@@ -483,8 +503,10 @@ export function StudioClient({
       if (!response.ok) throw new Error(payload.error || "The design could not be saved.");
       window.location.href = `/proof/${payload.id}`;
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "The design could not be saved.");
-      setBusy(false);
+      if (gen === readGen.current) {
+        setError(reason instanceof Error ? reason.message : "The design could not be saved.");
+        setBusy(false);
+      }
     }
   }
 
@@ -508,7 +530,14 @@ export function StudioClient({
   }, [style]);
 
   useEffect(() => {
-    if (!prints.some((print) => print.ridges.length > 8)) return;
+    if (!prints.some((print) => print.ridges.length > 8)) {
+      setPortraitReady(false);
+      return;
+    }
+    const gen = portraitGen.current + 1;
+    portraitGen.current = gen;
+    const seenRead = readGen.current;
+    setPortraitReady(false);
     const handle = window.setTimeout(() => {
       void fetch("/api/studio/portrait", {
         method: "POST",
@@ -517,11 +546,24 @@ export function StudioClient({
       })
         .then((response) => readJson<{ portraitPng?: string; error?: string }>(response))
         .then((payload) => {
-          if (typeof payload.portraitPng === "string" && payload.portraitPng) rememberPortrait(payload.portraitPng);
-          else if (!portraitUrlRef.current) setError(String(payload.error || "The portrait could not be drawn."));
+          if (gen !== portraitGen.current || seenRead !== readGen.current) return;
+          if (typeof payload.portraitPng === "string" && payload.portraitPng) {
+            rememberPortrait(payload.portraitPng);
+            setPortraitReady(true);
+          } else if (portraitUrlRef.current) {
+            setPortraitReady(true);
+          } else {
+            setPortraitReady(false);
+            setError(String(payload.error || "The portrait could not be drawn."));
+          }
         })
         .catch((reason) => {
-          if (!portraitUrlRef.current) setError(reason instanceof Error ? reason.message : "The portrait could not be drawn.");
+          if (gen !== portraitGen.current || seenRead !== readGen.current) return;
+          if (portraitUrlRef.current) setPortraitReady(true);
+          else {
+            setPortraitReady(false);
+            setError(reason instanceof Error ? reason.message : "The portrait could not be drawn.");
+          }
         });
     }, 400);
     return () => window.clearTimeout(handle);
@@ -838,7 +880,7 @@ export function StudioClient({
         {waitlist ? <p className="note">Orders open soon. Joining the list saves your email. Nothing is charged, and nothing is sent to print.</p> : null}
         <div className="checkout-bar">
           <strong>{formatMoney(product.priceCents)}</strong>
-          <button className="btn-gold" type="button" disabled={!ready || busy} onClick={checkout}>Review the proof</button>
+          <button className="btn-gold" type="button" disabled={!ready || busy || !portraitReady} onClick={checkout}>Review the proof</button>
         </div>
       </aside>
       <style>{`

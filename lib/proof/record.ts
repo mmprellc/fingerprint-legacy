@@ -2,7 +2,7 @@ import sharp from "sharp";
 import { designAssetKey, putBytes } from "../files";
 import { renderArtwork } from "../fingerprint/render-print";
 import type { PrintStyle } from "../fingerprint/types";
-import { catalogSize, productById } from "../products";
+import { catalogSize, productById, soldSize } from "../products";
 import { saveDesign, type Design, type ProofVersion } from "../store";
 import { capacityLine, contentWords, ridgeCapacity } from "./capacity";
 import { proofWarnings } from "./quality";
@@ -81,7 +81,9 @@ export async function recordVersion(
 
 export async function renderApproved(design: Design, version: ProofVersion) {
   const product = productById(version.productId);
-  const size = catalogSize(product.id, version.sizeId);
+  // A digital proof can store 16x20 so the screen preview matches that size.
+  // The file this format sells stays on its own size, so approval does not render a 300 DPI poster it does not sell.
+  const size = soldSize(product.id, version.sizeId);
   const art = await renderArtwork({
     prints: design.prints,
     style: version.style,
